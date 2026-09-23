@@ -1,0 +1,15 @@
+# Release output (tools/build-release.php)
+/dist/
+
+# Site data never belongs in the repository
+/config.php
+/data/*
+!/data/.htaccess
+/uploads/*
+!/uploads/.htaccess
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
