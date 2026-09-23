@@ -10,7 +10,7 @@
  */
 if (!defined('PB_ROOT')) { http_response_code(403); exit; }
 
-define('PB_VERSION', '0.12.0');
+define('PB_VERSION', '0.12.1');
 define('PB_HOMEPAGE', 'https://postbase.top');                             // project info, docs and support
 define('PB_REPO_URL', 'https://github.com/unnatidigiservices/postbase');    // source code and issues
 define('PB_SCHEMA_VERSION', 2);
@@ -154,6 +154,37 @@ function pb_csrf_check() {
 // ----------------------------------------------------------------------------
 // DATABASE — SQLite via PDO. See docs/DATABASE.md for why.
 // ----------------------------------------------------------------------------
+// Protective .htaccess files are dot-files, and dot-files are often silently
+// dropped by FTP clients, zip tools and GitHub's web uploader. PostBase never
+// relies on them having survived: it recreates any that are missing — the data
+// folder (SQLite database), uploads (never executable) and lib.
+function pb_ensure_protection() {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    $deny = "<IfModule mod_authz_core.c>\n  Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n  Order allow,deny\n  Deny from all\n</IfModule>\n";
+    $files = [
+        dirname(pb_config('db_path')) . '/.htaccess' => "# The SQLite database lives here. Never serve it.\n" . $deny,
+        PB_ROOT . '/lib/.htaccess' => $deny,
+        PB_UPLOAD_DIR . '/.htaccess' => "# Uploaded images only. Nothing in here may ever run as code.\n"
+            . "Options -Indexes -ExecCGI\n"
+            . "<FilesMatch \"\\.(php\\d?|phtml|phar|pl|py|cgi|sh|s?html?|htaccess|svg)$\">\n"
+            . "  <IfModule mod_authz_core.c>\n    Require all denied\n  </IfModule>\n"
+            . "  <IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n  </IfModule>\n</FilesMatch>\n"
+            . "<IfModule mod_mime.c>\n  RemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .phar .html .htm\n"
+            . "  RemoveType .php .phtml .php3 .php4 .php5 .php7 .php8 .phar .html .htm\n</IfModule>\n"
+            . "<IfModule mod_headers.c>\n  Header set X-Content-Type-Options \"nosniff\"\n</IfModule>\n",
+    ];
+    foreach ($files as $path => $content) {
+        $dir = dirname($path);
+        if (is_file($path)) continue;
+        // Only protect folders inside the PostBase install (a custom db_path outside the web root needs none).
+        if (strpos(str_replace('\\', '/', $dir), str_replace('\\', '/', PB_ROOT)) !== 0) continue;
+        if (!is_dir($dir)) @mkdir($dir, 0755, true);
+        @file_put_contents($path, $content);
+    }
+}
+
 function pb_db() {
     static $pdo = null;
     if ($pdo) return $pdo;
@@ -164,6 +195,7 @@ function pb_db() {
     $dir = dirname($path);
     if (!is_dir($dir) && !@mkdir($dir, 0755, true)) pb_fatal('Could not create the data folder: ' . $dir);
     if (!is_writable($dir)) pb_fatal('The data folder is not writable: ' . $dir);
+    pb_ensure_protection();
     try {
         $pdo = new PDO('sqlite:' . $path, null, null, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
@@ -835,6 +867,7 @@ function pb_store_image($tmpPath, $origName, $isUpload) {
     $ext = $types[$info[2]];
 
     $sub = gmdate('Y') . '/' . gmdate('m');
+    pb_ensure_protection();
     $dir = PB_UPLOAD_DIR . '/' . $sub;
     if (!is_dir($dir) && !@mkdir($dir, 0755, true)) return ['error' => 'Could not create the uploads folder.'];
     $base = pb_slugify(pathinfo($origName, PATHINFO_FILENAME), 40) ?: 'image';
