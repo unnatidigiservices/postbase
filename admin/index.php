@@ -1,0 +1,945 @@
+<?php
+/**
+ * Unnati PostBase — admin (writing, review workflow, users, settings).
+ *
+ * SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-PostBase-Commercial
+ */
+define('PB_ROOT', dirname(__DIR__));
+define('PB_BASE_PATH', rtrim(str_replace('\\', '/', dirname(dirname($_SERVER['SCRIPT_NAME']))), '/'));
+require PB_ROOT . '/lib/postbase.php';
+
+pb_session_start();
+header('X-Frame-Options: SAMEORIGIN');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: strict-origin-when-cross-origin'); // YouTube embeds refuse to play without a referrer
+header('Cache-Control: no-store');
+
+function pb_admin_url($query = '') {
+    return PB_BASE_PATH . '/admin/' . ($query !== '' ? '?' . $query : '');
+}
+function pb_redirect($query = '') {
+    header('Location: ' . pb_admin_url($query));
+    exit;
+}
+function pb_flash($msg, $type = 'ok') {
+    $_SESSION['pb_flash'][] = [$type, $msg];
+}
+function pb_json($data, $code = 200) {
+    http_response_code($code);
+    header('Content-Type: application/json');
+    echo json_encode($data);
+    exit;
+}
+// GeoRank's admin folder name varies per install; find it by its config file.
+function pb_georank_admin_url() {
+    $hits = glob(PB_SITE_DIR . '/*/georank-config.json');
+    if (!$hits) return null;
+    return pb_site_base_path() . '/' . basename(dirname($hits[0])) . '/';
+}
+function pb_csrf_field() {
+    return '<input type="hidden" name="_csrf" value="' . pb_e(pb_csrf_token()) . '">';
+}
+function pb_status_badge($status, $publishedAt = null) {
+    $label = pb_status_label($status, $publishedAt);
+    $cls = $label === 'Scheduled' ? 'scheduled' : $status;
+    return '<span class="pb-badge pb-badge-' . pb_e($cls) . '">' . pb_e($label) . '</span>';
+}
+function pb_utc_to_local_input($utc) {
+    if (!$utc) return '';
+    return pb_format_date($utc, 'Y-m-d\TH:i');
+}
+// Upload-or-remove image picker (cover image, social image, favicon). Wired up
+// by admin.js through the data-imgfield attributes.
+function pb_image_field($name, $value, $label, $hint = '', $editable = true) {
+    $value = (string) $value;
+    $h = '<div class="pb-imgfield" data-imgfield><span class="pb-small pb-field-label">' . pb_e($label) . '</span>'
+       . '<div class="pb-imgfield-preview" data-img-preview>' . ($value !== '' ? '<img src="' . pb_e($value) . '" alt="">' : '') . '</div>'
+       . '<input type="hidden" name="' . pb_e($name) . '" value="' . pb_e($value) . '" data-img-value>';
+    if ($editable) {
+        $h .= '<div class="pb-row"><button type="button" class="pb-btn pb-btn-sm" data-img-upload>' . ($value !== '' ? 'Replace' : 'Upload') . '</button>'
+            . '<button type="button" class="pb-btn pb-btn-sm" data-img-clear' . ($value === '' ? ' hidden' : '') . '>Remove</button></div>'
+            . '<input type="file" accept="image/jpeg,image/png,image/gif,image/webp" hidden data-img-file>';
+    }
+    if ($hint !== '') $h .= '<p class="pb-small pb-muted pb-hint">' . pb_e($hint) . '</p>';
+    return $h . '</div>';
+}
+// Hex colour with a picker; empty = inherit the site theme.
+function pb_color_field($name, $value, $label) {
+    $hex = pb_valid_hex($value);
+    return '<div class="pb-colorfield" data-colorfield><span class="pb-small pb-field-label">' . pb_e($label) . '</span><div class="pb-row">'
+         . '<input type="color" value="' . pb_e($hex ?: '#1d5cff') . '" data-color-picker aria-label="' . pb_e($label) . ' picker">'
+         . '<input type="text" name="' . pb_e($name) . '" value="' . pb_e($hex) . '" placeholder="Site theme" maxlength="7" pattern="#[0-9a-fA-F]{6}" data-color-text>'
+         . '<button type="button" class="pb-btn pb-btn-sm" data-color-clear>Reset</button></div></div>';
+}
+
+$user = pb_current_user();
+$view = (string) ($_GET['view'] ?? 'posts');
+$isPost = $_SERVER['REQUEST_METHOD'] === 'POST';
+
+// ============================================================================
+// FIRST RUN SETUP (no users yet, and no GeoRank admin session to sign in with)
+// ============================================================================
+if (!$user && pb_count_users() === 0) {
+    $err = '';
+    if ($isPost && ($_POST['do'] ?? '') === 'setup') {
+        pb_csrf_check();
+        $key = (string) pb_config('setup_key');
+        $name = trim((string) ($_POST['name'] ?? ''));
+        $email = trim((string) ($_POST['email'] ?? ''));
+        $pass = (string) ($_POST['password'] ?? '');
+        if ($key !== '' && !hash_equals($key, (string) ($_POST['setup_key'] ?? ''))) $err = 'Wrong setup key.';
+        elseif ($name === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) $err = 'Enter your name and a valid email.';
+        elseif (strlen($pass) < 8) $err = 'Use a password of at least 8 characters.';
+        else {
+            pb_q("INSERT INTO users (email, name, password_hash, role, created_at) VALUES (?, ?, ?, 'admin', ?)",
+                [$email, $name, password_hash($pass, PASSWORD_DEFAULT), pb_now()]);
+            pb_attempt_login($email, $pass);
+            pb_flash('Welcome to PostBase. Write your first post!');
+            pb_redirect('view=edit');
+        }
+    }
+    pb_auth_page('Set up your blog', $err, function () {
+        $key = (string) pb_config('setup_key'); ?>
+        <p class="pb-muted">Create the first admin account. You can add Editors and Contributors afterwards.</p>
+        <form method="post">
+          <?= pb_csrf_field() ?><input type="hidden" name="do" value="setup">
+          <?php if ($key !== ''): ?><label>Setup key<input name="setup_key" required autocomplete="off"></label><?php endif; ?>
+          <label>Your name<input name="name" required value="<?= pb_e($_POST['name'] ?? '') ?>"></label>
+          <label>Email<input type="email" name="email" required value="<?= pb_e($_POST['email'] ?? '') ?>"></label>
+          <label>Password<input type="password" name="password" required minlength="8" autocomplete="new-password"></label>
+          <button class="pb-btn pb-btn-primary pb-btn-block">Create admin account</button>
+        </form>
+        <?php
+    });
+    exit;
+}
+
+// ============================================================================
+// LOGIN / LOGOUT
+// ============================================================================
+if (isset($_GET['logout'])) {
+    if (hash_equals(pb_csrf_token(), (string) $_GET['logout'])) {
+        unset($_SESSION['pb_uid']);
+        session_regenerate_id(true);
+    }
+    if (pb_georank_session_role()) {
+        pb_flash('You are signed in through GeoRank. Log out from the GeoRank dashboard to end that session.', 'info');
+    }
+    pb_redirect();
+}
+if (!$user) {
+    $err = '';
+    if ($isPost && ($_POST['do'] ?? '') === 'login') {
+        pb_csrf_check();
+        $err = pb_attempt_login($_POST['email'] ?? '', $_POST['password'] ?? '');
+        if ($err === null) pb_redirect();
+    }
+    $gr = pb_georank_admin_url();
+    pb_auth_page('Sign in', $err, function () use ($gr) { ?>
+        <form method="post">
+          <?= pb_csrf_field() ?><input type="hidden" name="do" value="login">
+          <label>Email<input type="email" name="email" required autofocus value="<?= pb_e($_POST['email'] ?? '') ?>" autocomplete="username"></label>
+          <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
+          <button class="pb-btn pb-btn-primary pb-btn-block">Sign in</button>
+        </form>
+        <?php if ($gr): ?><p class="pb-muted pb-center">Site owner? <a href="<?= pb_e($gr) ?>">Sign in to GeoRank</a> and come back — you'll be signed in here automatically.</p><?php endif;
+    });
+    exit;
+}
+
+// ============================================================================
+// POST ACTIONS (all CSRF-checked, all permission-checked in the library)
+// ============================================================================
+if ($isPost) {
+    pb_csrf_check();
+    $do = (string) ($_POST['do'] ?? '');
+
+    if ($do === 'upload') {
+        if (!pb_can($user, 'media.upload')) pb_json(['error' => 'Not allowed.'], 403);
+        $r = pb_handle_upload($_FILES['file'] ?? null);
+        pb_json($r, isset($r['error']) ? 400 : 200);
+    }
+    if ($do === 'import_image') { // images pasted from Docs/WordPress/web pages -> our uploads
+        if (!pb_can($user, 'media.upload')) pb_json(['error' => 'Not allowed.'], 403);
+        $r = pb_import_remote_image((string) ($_POST['url'] ?? ''));
+        pb_json($r, isset($r['error']) ? 400 : 200);
+    }
+
+    if ($do === 'save_post') {
+        $id = (int) ($_POST['id'] ?? 0);
+        $then = (string) ($_POST['then'] ?? 'save');
+        [$id, $err] = pb_post_save($user, $id, $_POST);
+        if ($err) { pb_flash($err, 'error'); pb_redirect($id ? 'view=edit&id=' . $id : 'view=posts'); }
+        if ($then === 'submit' || $then === 'publish') {
+            $err = pb_post_transition($user, pb_post_by_id($id), $then, '', (string) ($_POST['publish_at'] ?? ''));
+            if ($err) pb_flash($err, 'error');
+            else {
+                $p = pb_post_by_id($id);
+                pb_flash($then === 'submit' ? 'Submitted for review. An Editor will approve it or send it back with notes.'
+                    : (pb_status_label($p['status'], $p['published_at']) === 'Scheduled'
+                        ? 'Scheduled for ' . pb_format_date($p['published_at'], 'j M Y, g:i a') . '.' : 'Published!'));
+            }
+        } else {
+            pb_flash('Saved.');
+        }
+        pb_redirect('view=edit&id=' . $id);
+    }
+
+    if ($do === 'transition') {
+        $post = pb_post_by_id((int) ($_POST['id'] ?? 0));
+        $action = (string) ($_POST['action'] ?? '');
+        if (!$post) { pb_flash('Post not found.', 'error'); pb_redirect(); }
+        $err = pb_post_transition($user, $post, $action, (string) ($_POST['note'] ?? ''), (string) ($_POST['publish_at'] ?? ''));
+        if ($err) { pb_flash($err, 'error'); pb_redirect('view=edit&id=' . (int) $post['id']); }
+        $msgs = ['withdraw' => 'Moved back to drafts.', 'request_changes' => 'Sent back to the writer with your notes.',
+                 'unpublish' => 'Unpublished — the post is a draft again.', 'archive' => 'Archived.', 'restore' => 'Restored as a draft.',
+                 'delete' => 'Deleted permanently.', 'publish' => 'Published!', 'submit' => 'Submitted for review.'];
+        pb_flash($msgs[$action] ?? 'Done.');
+        pb_redirect($action === 'delete' ? 'view=posts' : 'view=edit&id=' . (int) $post['id']);
+    }
+
+    if ($do === 'category_save' && pb_can($user, 'category.manage')) {
+        $id = (int) ($_POST['id'] ?? 0);
+        $name = trim((string) ($_POST['name'] ?? ''));
+        if ($name === '') { pb_flash('Category name is required.', 'error'); pb_redirect('view=categories'); }
+        $slug = pb_unique_slug(trim((string) ($_POST['slug'] ?? '')) ?: $name, 'categories', $id);
+        $desc = trim((string) ($_POST['description'] ?? ''));
+        $sort = (int) ($_POST['sort'] ?? 0);
+        if ($id) pb_q('UPDATE categories SET name = ?, slug = ?, description = ?, sort = ? WHERE id = ?', [$name, $slug, $desc, $sort, $id]);
+        else pb_q('INSERT INTO categories (name, slug, description, sort) VALUES (?, ?, ?, ?)', [$name, $slug, $desc, $sort]);
+        pb_flash('Category saved.');
+        pb_redirect('view=categories');
+    }
+    if ($do === 'category_delete' && pb_can($user, 'category.manage')) {
+        pb_q('DELETE FROM categories WHERE id = ?', [(int) ($_POST['id'] ?? 0)]);
+        pb_flash('Category deleted. Its posts are now uncategorised.');
+        pb_redirect('view=categories');
+    }
+
+    if ($do === 'user_save' && pb_can($user, 'user.manage')) {
+        $id = (int) ($_POST['id'] ?? 0);
+        $name = trim((string) ($_POST['name'] ?? ''));
+        $email = trim((string) ($_POST['email'] ?? ''));
+        $role = (string) ($_POST['role'] ?? 'contributor');
+        $pass = (string) ($_POST['password'] ?? '');
+        $target = $id ? pb_row('SELECT * FROM users WHERE id = ?', [$id]) : null;
+        if (!in_array($role, PB_ROLES, true)) $role = 'contributor';
+        if ($name === '') { pb_flash('Name is required.', 'error'); pb_redirect('view=users'); }
+        if ($target && (int) $target['id'] === (int) $user['id'] && $role !== 'admin') {
+            pb_flash('You can\'t remove your own admin role.', 'error'); pb_redirect('view=users');
+        }
+        if ($target && $target['source'] === 'georank') {
+            pb_q('UPDATE users SET name = ? WHERE id = ?', [$name, $id]); // role follows the GeoRank login
+        } elseif ($target) {
+            if (!filter_var($email, FILTER_VALIDATE_EMAIL)) { pb_flash('Enter a valid email.', 'error'); pb_redirect('view=users'); }
+            if ((int) pb_val('SELECT COUNT(*) FROM users WHERE email = ? AND id != ?', [$email, $id])) { pb_flash('That email is already used.', 'error'); pb_redirect('view=users'); }
+            pb_q('UPDATE users SET name = ?, email = ?, role = ? WHERE id = ?', [$name, $email, $role, $id]);
+            if ($pass !== '') {
+                if (strlen($pass) < 8) { pb_flash('Passwords need at least 8 characters.', 'error'); pb_redirect('view=users'); }
+                pb_q('UPDATE users SET password_hash = ? WHERE id = ?', [password_hash($pass, PASSWORD_DEFAULT), $id]);
+            }
+        } else {
+            if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($pass) < 8) {
+                pb_flash('New users need a valid email and a password of at least 8 characters.', 'error'); pb_redirect('view=users');
+            }
+            if ((int) pb_val('SELECT COUNT(*) FROM users WHERE email = ?', [$email])) { pb_flash('That email is already used.', 'error'); pb_redirect('view=users'); }
+            pb_q('INSERT INTO users (email, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)',
+                [$email, $name, password_hash($pass, PASSWORD_DEFAULT), $role, pb_now()]);
+        }
+        pb_flash('User saved.' . (!$target ? ' Share the sign-in link and password with them: ' . pb_abs_url(pb_admin_url()) : ''));
+        pb_redirect('view=users');
+    }
+    if ($do === 'user_toggle' && pb_can($user, 'user.manage')) {
+        $id = (int) ($_POST['id'] ?? 0);
+        if ($id === (int) $user['id']) { pb_flash('You can\'t deactivate yourself.', 'error'); pb_redirect('view=users'); }
+        pb_q('UPDATE users SET active = 1 - active WHERE id = ?', [$id]);
+        pb_flash('User updated.');
+        pb_redirect('view=users');
+    }
+
+    if ($do === 'settings_save' && pb_can($user, 'settings.manage')) {
+        $tz = (string) ($_POST['timezone'] ?? 'UTC');
+        if (!in_array($tz, timezone_identifiers_list(), true)) $tz = 'UTC';
+        $siteUrl = trim((string) ($_POST['site_url'] ?? ''));
+        if ($siteUrl !== '' && !preg_match('~^https?://[^/\s]+~i', $siteUrl)) $siteUrl = '';
+        pb_settings_save([
+            'blog_title' => trim((string) ($_POST['blog_title'] ?? '')) ?: 'Blog',
+            'blog_description' => trim((string) ($_POST['blog_description'] ?? '')),
+            'posts_per_page' => (string) max(1, min(48, (int) ($_POST['posts_per_page'] ?? 9))),
+            'layout' => in_array($_POST['layout'] ?? '', ['auto', 'georank', 'standalone'], true) ? $_POST['layout'] : 'auto',
+            'timezone' => $tz,
+            'pretty_urls' => !empty($_POST['pretty_urls']) ? '1' : '0',
+            'site_url' => rtrim($siteUrl, '/'),
+            'language' => preg_replace('/[^a-zA-Z\-]/', '', (string) ($_POST['language'] ?? 'en')) ?: 'en',
+            'show_author' => !empty($_POST['show_author']) ? '1' : '0',
+            'georank_sso' => !empty($_POST['georank_sso']) ? '1' : '0',
+            'georank_editor_role' => in_array($_POST['georank_editor_role'] ?? '', PB_ROLES, true) ? $_POST['georank_editor_role'] : 'editor',
+        ]);
+        pb_flash('Settings saved.');
+        pb_redirect('view=settings');
+    }
+    if ($do === 'design_save' && pb_can($user, 'settings.manage')) {
+        $img = function ($k) {
+            $v = trim((string) ($_POST[$k] ?? ''));
+            return $v !== '' && pb_safe_url($v) !== null && !preg_match('/^(mailto|tel):/i', $v) ? $v : '';
+        };
+        $fonts = pb_font_choices();
+        $font = function ($k) use ($fonts) { $v = (string) ($_POST[$k] ?? ''); return isset($fonts[$v]) ? $v : ''; };
+        $size = (int) ($_POST['design_font_size'] ?? 0);
+        pb_settings_save([
+            'design_social_image' => $img('design_social_image'),
+            'design_favicon' => $img('design_favicon'),
+            'design_font_body' => $font('design_font_body'),
+            'design_font_heading' => $font('design_font_heading'),
+            'design_font_size' => $size >= 14 && $size <= 22 ? (string) $size : '',
+            'design_accent' => pb_valid_hex($_POST['design_accent'] ?? ''),
+            'design_text' => pb_valid_hex($_POST['design_text'] ?? ''),
+            'design_bg' => pb_valid_hex($_POST['design_bg'] ?? ''),
+            'design_surface' => pb_valid_hex($_POST['design_surface'] ?? ''),
+        ]);
+        pb_flash('Design saved.');
+        pb_redirect('view=settings&tab=design');
+    }
+    if ($do === 'nav_save' && pb_can($user, 'settings.manage')) {
+        $items = !empty($_POST['reset']) ? '' : json_encode(pb_nav_clean(is_array($_POST['nav'] ?? null) ? $_POST['nav'] : []), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        pb_settings_save(['nav_items' => $items, 'nav_show_georank' => !empty($_POST['nav_show_georank']) ? '1' : '0']);
+        pb_flash(!empty($_POST['reset']) ? 'Navigation reset to Home, Blog, Contact.' : 'Navigation saved.');
+        pb_redirect('view=settings&tab=navigation');
+    }
+    if ($do === 'robots_sitemap' && pb_can($user, 'settings.manage')) {
+        $msg = pb_robots_add_sitemap();
+        pb_flash($msg ?: 'Could not write robots.txt (check file permissions).', $msg ? 'ok' : 'error');
+        pb_redirect('view=settings');
+    }
+
+    if ($do === 'account_save') {
+        $name = trim((string) ($_POST['name'] ?? ''));
+        if ($name !== '') pb_q('UPDATE users SET name = ?, bio = ? WHERE id = ?', [$name, trim((string) ($_POST['bio'] ?? '')), $user['id']]);
+        $new = (string) ($_POST['new_password'] ?? '');
+        if ($new !== '' && $user['source'] === 'local') {
+            if (!password_verify((string) ($_POST['current_password'] ?? ''), (string) $user['password_hash'])) {
+                pb_flash('Your current password is wrong.', 'error'); pb_redirect('view=account');
+            }
+            if (strlen($new) < 8) { pb_flash('Use at least 8 characters.', 'error'); pb_redirect('view=account'); }
+            pb_q('UPDATE users SET password_hash = ? WHERE id = ?', [password_hash($new, PASSWORD_DEFAULT), $user['id']]);
+        }
+        pb_flash('Account updated.');
+        pb_redirect('view=account');
+    }
+
+    pb_flash('That action isn\'t available to your role.', 'error');
+    pb_redirect();
+}
+
+// ============================================================================
+// VIEWS
+// ============================================================================
+$isEditor = pb_can($user, 'category.manage');
+$pendingCount = $isEditor ? (int) pb_val("SELECT COUNT(*) FROM posts WHERE status = 'pending'") : 0;
+$myChanges = (int) pb_val("SELECT COUNT(*) FROM posts WHERE status = 'changes_requested' AND author_id = ?", [$user['id']]);
+
+ob_start();
+$title = 'Posts';
+
+if ($view === 'edit') {
+    $id = (int) ($_GET['id'] ?? 0);
+    $post = $id ? pb_post_by_id($id) : null;
+    if ($id && (!$post || !pb_can($user, 'post.view', $post))) { pb_flash('Post not found.', 'error'); pb_redirect(); }
+    $canEdit = $post ? pb_can($user, 'post.edit', $post) : true;
+    $cats = pb_all('SELECT id, name FROM categories ORDER BY sort, name');
+    $p = $post ?: ['id' => 0, 'title' => '', 'slug' => '', 'body' => '', 'excerpt' => '', 'cover_image' => '', 'cover_alt' => '',
+                   'category_id' => null, 'seo_title' => '', 'seo_description' => '', 'status' => 'draft', 'published_at' => null,
+                   'author_id' => $user['id'], 'author_name' => $user['name'], 'first_published_at' => null,
+                   'type' => $isEditor && ($_GET['type'] ?? '') === 'page' ? 'page' : 'post', 'pinned' => 0];
+    $isPage = $p['type'] === 'page';
+    $title = $post ? ($isPage ? 'Edit page' : 'Edit post') : ($isPage ? 'New page' : 'Write');
+    $events = $post ? pb_post_events($post['id']) : [];
+    $lastNote = null;
+    foreach ($events as $ev) if ($ev['action'] === 'request_changes') { $lastNote = $ev; break; }
+    $previewUrl = $post ? pb_url('post', $post['slug']) . (pb_setting('pretty_urls') === '1' ? '?preview=1' : '&preview=1') : '';
+    ?>
+<?php if ($post && $post['status'] === 'changes_requested' && $lastNote): ?>
+  <div class="pb-note"><strong>Changes requested by <?= pb_e($lastNote['user_name']) ?>:</strong> <?= nl2br(pb_e($lastNote['note'])) ?></div>
+<?php endif; ?>
+<?php if (!$canEdit): ?>
+  <div class="pb-note pb-note-info">This post is <?= pb_e(strtolower(pb_status_label($p['status'], $p['published_at']))) ?> and can't be edited by your role. Ask an Editor if something needs to change.</div>
+<?php endif; ?>
+<form method="post" id="pbPostForm" class="pb-edit-grid" data-new="<?= $post ? '0' : '1' ?>">
+  <?= pb_csrf_field() ?>
+  <input type="hidden" name="do" value="save_post">
+  <input type="hidden" name="id" value="<?= (int) $p['id'] ?>">
+  <input type="hidden" name="then" value="save" id="pbThen">
+  <div class="pb-card pb-editor-card">
+    <input class="pb-title-input" name="title" id="pbTitle" placeholder="<?= $isPage ? 'Page title (e.g. About)' : 'Your next post…' ?>" value="<?= pb_e($p['title']) ?>" <?= $canEdit ? '' : 'readonly' ?> maxlength="200" aria-label="Title">
+    <?php if ($canEdit): ?>
+    <div class="pb-toolbar" role="toolbar" aria-label="Formatting">
+      <button type="button" data-cmd="bold" title="Bold (Ctrl+B)"><b>B</b></button>
+      <button type="button" data-cmd="italic" title="Italic (Ctrl+I)"><i>I</i></button>
+      <button type="button" data-cmd="h2" title="Heading">H2</button>
+      <button type="button" data-cmd="h3" title="Subheading">H3</button>
+      <span class="pb-tsep"></span>
+      <button type="button" data-cmd="link" title="Link">🔗</button>
+      <button type="button" data-cmd="insertUnorderedList" title="Bullet list">• List</button>
+      <button type="button" data-cmd="insertOrderedList" title="Numbered list">1. List</button>
+      <button type="button" data-cmd="blockquote" title="Quote">❝</button>
+      <span class="pb-tsep"></span>
+      <button type="button" data-cmd="image" title="Insert image">🖼 Image</button>
+      <button type="button" data-cmd="video" title="Embed YouTube or Vimeo">▶ Video</button>
+      <button type="button" data-cmd="removeFormat" title="Clear formatting">⌫</button>
+      <button type="button" data-cmd="source" title="Edit HTML" class="pb-tright">&lt;/&gt;</button>
+    </div>
+    <?php endif; ?>
+    <div class="pb-editor pb-prose" id="pbEditor" <?= $canEdit ? 'contenteditable="true"' : '' ?> data-placeholder="Write something amazing…"><?= $p['body'] ?></div>
+    <textarea name="body" id="pbBody" class="pb-source" hidden><?= pb_e($p['body']) ?></textarea>
+    <?php if ($canEdit): ?>
+    <p class="pb-editor-tip">Write anywhere, paste here: Word, Google Docs, WordPress blocks and Markdown keep their formatting, and pasted images are saved to your blog.
+      Shortcuts: <code>##</code> heading · <code>-</code> list · <code>1.</code> numbered · <code>&gt;</code> quote · <code>**bold**</code> · <code>*italic*</code> · <code>`code`</code> · <code>---</code> line</p>
+    <?php endif; ?>
+    <div class="pb-imgbar" id="pbImgBar" hidden role="toolbar" aria-label="Image options">
+      <span class="pb-imgbar-label">Wrap</span>
+      <button type="button" data-align="" title="No wrap (on its own line)">None</button>
+      <button type="button" data-align="left" title="Float left, text wraps on the right">⇤ Left</button>
+      <button type="button" data-align="center" title="Centred on its own line">Centre</button>
+      <button type="button" data-align="right" title="Float right, text wraps on the left">Right ⇥</button>
+      <span class="pb-imgbar-sep"></span>
+      <span class="pb-imgbar-label">Size</span>
+      <button type="button" data-size="s" title="300px wide">S</button>
+      <button type="button" data-size="m" title="500px wide">M</button>
+      <button type="button" data-size="l" title="760px wide">L</button>
+      <button type="button" data-size="full" title="Full width">Full</button>
+      <span class="pb-imgbar-sep"></span>
+      <button type="button" data-img-act="alt" title="Alt text">Alt</button>
+      <button type="button" data-img-act="caption" title="Caption">Caption</button>
+      <button type="button" data-img-act="remove" title="Remove" class="pb-danger-text">✕</button>
+    </div>
+    <input type="file" id="pbImageFile" accept="image/jpeg,image/png,image/gif,image/webp" hidden>
+  </div>
+
+  <aside class="pb-side">
+    <div class="pb-card">
+      <div class="pb-side-head">
+        <?= pb_status_badge($p['status'], $p['published_at']) ?>
+        <?php if ($post): ?><a class="pb-link-sm" href="<?= pb_e($previewUrl) ?>" target="_blank" rel="noopener">Preview ↗</a><?php endif; ?>
+      </div>
+      <p class="pb-muted pb-small">By <?= pb_e($p['author_name']) ?><?php if ($p['published_at'] && $p['status'] === 'published'): ?> · <?= pb_e(pb_format_date($p['published_at'], 'j M Y, g:i a')) ?><?php endif; ?></p>
+      <?php if ($canEdit): ?>
+        <?php if (pb_can($user, 'post.publish', $p)): ?>
+          <label class="pb-small">Publish date <span class="pb-muted">(future = scheduled)</span>
+            <input type="datetime-local" name="<?= $p['status'] === 'published' ? 'published_at' : 'publish_at' ?>" value="<?= pb_e(pb_utc_to_local_input($p['status'] === 'published' ? $p['published_at'] : null)) ?>">
+          </label>
+        <?php endif; ?>
+        <div class="pb-actions">
+          <button class="pb-btn pb-btn-primary" data-then="save">Save<?= $p['status'] === 'published' ? ' changes' : ' draft' ?></button>
+          <?php if (pb_can($user, 'post.submit', $p)): ?>
+            <button class="pb-btn pb-btn-primary" data-then="submit">Submit for review</button>
+          <?php endif; ?>
+          <?php if (pb_can($user, 'post.publish', $p) && $p['status'] !== 'published'): ?>
+            <button class="pb-btn pb-btn-primary" data-then="publish"><?= $p['status'] === 'pending' ? 'Approve &amp; publish' : 'Publish' ?></button>
+          <?php endif; ?>
+        </div>
+      <?php endif; ?>
+    </div>
+
+    <?php if ($post && pb_can($user, 'post.request_changes', $post)): ?>
+    <div class="pb-card">
+      <h3 class="pb-h3">Review</h3>
+      <p class="pb-muted pb-small">Not ready? Send it back to <?= pb_e($post['author_name']) ?> with notes.</p>
+      <textarea form="pbReviewForm" name="note" rows="3" placeholder="What should change?" required></textarea>
+      <button form="pbReviewForm" class="pb-btn pb-btn-warn pb-btn-block">Request changes</button>
+    </div>
+    <?php endif; ?>
+
+    <div class="pb-card">
+      <h3 class="pb-h3"><?= $isPage ? 'Page details' : 'Post details' ?></h3>
+      <?php if ($isEditor): ?>
+        <label class="pb-small">Type
+          <select name="type" id="pbType" <?= $canEdit ? '' : 'disabled' ?>>
+            <option value="post"<?= !$isPage ? ' selected' : '' ?>>Blog post (listed on the blog, RSS, categories)</option>
+            <option value="page"<?= $isPage ? ' selected' : '' ?>>Page (About, Contact… — not listed, add it to Navigation)</option>
+          </select>
+        </label>
+        <label class="pb-check pb-small" id="pbPinWrap"<?= $isPage ? ' hidden' : '' ?>><input type="checkbox" name="pinned" value="1"<?= !empty($p['pinned']) ? ' checked' : '' ?> <?= $canEdit ? '' : 'disabled' ?>> 📌 Pin as Featured at the top of the blog home</label>
+      <?php endif; ?>
+      <label class="pb-small" id="pbCatWrap"<?= $isPage ? ' hidden' : '' ?>>Category
+        <select name="category_id" <?= $canEdit ? '' : 'disabled' ?>>
+          <option value="0">— None —</option>
+          <?php foreach ($cats as $c): ?><option value="<?= (int) $c['id'] ?>"<?= (int) $p['category_id'] === (int) $c['id'] ? ' selected' : '' ?>><?= pb_e($c['name']) ?></option><?php endforeach; ?>
+        </select>
+      </label>
+      <?php if (!$cats && $isEditor): ?><p class="pb-small pb-muted"><a href="<?= pb_e(pb_admin_url('view=categories')) ?>">Add categories</a></p><?php endif; ?>
+      <div class="pb-cover-field">
+        <?= pb_image_field('cover_image', $p['cover_image'], 'Featured image', 'Shown on the post and its card. Without one, the blog uses the first image in the post, then the default social image.', $canEdit) ?>
+        <input name="cover_alt" placeholder="Describe the image (alt text)" value="<?= pb_e($p['cover_alt']) ?>" <?= $canEdit ? '' : 'readonly' ?>>
+      </div>
+      <label class="pb-small">Excerpt <span class="pb-muted pb-count" data-for="pbExcerpt" data-max="200"></span>
+        <textarea name="excerpt" id="pbExcerpt" rows="3" maxlength="300" placeholder="Short summary for the post list (optional)" <?= $canEdit ? '' : 'readonly' ?>><?= pb_e($p['excerpt']) ?></textarea>
+      </label>
+    </div>
+
+    <details class="pb-card">
+      <summary class="pb-h3">SEO &amp; URL</summary>
+      <label class="pb-small">URL slug
+        <input name="slug" id="pbSlug" value="<?= pb_e($p['slug']) ?>" placeholder="auto from title" <?= $canEdit ? '' : 'readonly' ?> pattern="[a-z0-9\-]*">
+      </label>
+      <label class="pb-small">SEO title <span class="pb-muted pb-count" data-for="pbSeoTitle" data-max="60"></span>
+        <input name="seo_title" id="pbSeoTitle" value="<?= pb_e($p['seo_title']) ?>" placeholder="Defaults to the post title" <?= $canEdit ? '' : 'readonly' ?>>
+      </label>
+      <label class="pb-small">Meta description <span class="pb-muted pb-count" data-for="pbSeoDesc" data-max="160"></span>
+        <textarea name="seo_description" id="pbSeoDesc" rows="3" placeholder="Defaults to the excerpt" <?= $canEdit ? '' : 'readonly' ?>><?= pb_e($p['seo_description']) ?></textarea>
+      </label>
+    </details>
+
+    <?php if ($post): ?>
+    <div class="pb-card pb-more-actions">
+      <?php foreach ([['withdraw', 'post.withdraw', 'Withdraw from review', ''], ['unpublish', 'post.unpublish', 'Unpublish', 'Take this post off the blog?'],
+                      ['archive', 'post.archive', 'Archive', 'Archive this post? It will be hidden from the blog.'], ['restore', 'post.restore', 'Restore as draft', ''],
+                      ['delete', 'post.delete', 'Delete permanently', 'Delete this post forever? This cannot be undone.']] as [$act, $perm, $label, $confirm]):
+          if (!pb_can($user, $perm, $post)) continue; ?>
+        <button form="pbAct_<?= $act ?>" class="pb-btn pb-btn-sm<?= $act === 'delete' || $act === 'archive' ? ' pb-btn-danger' : '' ?>"<?= $confirm ? ' data-confirm="' . pb_e($confirm) . '"' : '' ?>><?= pb_e($label) ?></button>
+      <?php endforeach; ?>
+    </div>
+    <div class="pb-card">
+      <h3 class="pb-h3">Activity</h3>
+      <ol class="pb-activity">
+        <?php foreach ($events as $ev): ?>
+        <li><strong><?= pb_e($ev['user_name'] ?? 'Someone') ?></strong> <?= pb_e(str_replace('_', ' ', $ev['action'])) ?>
+          <span class="pb-muted">· <?= pb_e(pb_format_date($ev['created_at'], 'j M, g:i a')) ?></span>
+          <?php if ($ev['note'] !== ''): ?><blockquote><?= nl2br(pb_e($ev['note'])) ?></blockquote><?php endif; ?></li>
+        <?php endforeach; ?>
+      </ol>
+    </div>
+    <?php endif; ?>
+  </aside>
+</form>
+<?php if ($post): ?>
+  <form method="post" id="pbReviewForm" hidden><?= pb_csrf_field() ?><input type="hidden" name="do" value="transition"><input type="hidden" name="id" value="<?= (int) $post['id'] ?>"><input type="hidden" name="action" value="request_changes"></form>
+  <?php foreach (['withdraw', 'unpublish', 'archive', 'restore', 'delete'] as $act): ?>
+  <form method="post" id="pbAct_<?= $act ?>" hidden><?= pb_csrf_field() ?><input type="hidden" name="do" value="transition"><input type="hidden" name="id" value="<?= (int) $post['id'] ?>"><input type="hidden" name="action" value="<?= $act ?>"></form>
+  <?php endforeach; ?>
+<?php endif; ?>
+<?php
+
+} elseif ($view === 'categories' && $isEditor) {
+    $title = 'Categories';
+    $rows = pb_all('SELECT c.*, (SELECT COUNT(*) FROM posts p WHERE p.category_id = c.id) AS n FROM categories c ORDER BY c.sort, c.name');
+    $editId = (int) ($_GET['id'] ?? 0);
+    $ec = $editId ? pb_row('SELECT * FROM categories WHERE id = ?', [$editId]) : null; ?>
+<div class="pb-two-col">
+  <div class="pb-card">
+    <table class="pb-table">
+      <thead><tr><th>Name</th><th>Slug</th><th>Posts</th><th></th></tr></thead>
+      <tbody>
+      <?php foreach ($rows as $c): ?>
+        <tr><td><strong><?= pb_e($c['name']) ?></strong><?php if ($c['description'] !== ''): ?><div class="pb-small pb-muted"><?= pb_e($c['description']) ?></div><?php endif; ?></td>
+          <td><code><?= pb_e($c['slug']) ?></code></td><td><?= (int) $c['n'] ?></td>
+          <td class="pb-right"><a class="pb-btn pb-btn-sm" href="<?= pb_e(pb_admin_url('view=categories&id=' . (int) $c['id'])) ?>">Edit</a>
+            <form method="post" class="pb-inline"><?= pb_csrf_field() ?><input type="hidden" name="do" value="category_delete"><input type="hidden" name="id" value="<?= (int) $c['id'] ?>">
+              <button class="pb-btn pb-btn-sm pb-btn-danger" data-confirm="Delete this category? Its posts stay, uncategorised.">Delete</button></form></td></tr>
+      <?php endforeach; ?>
+      <?php if (!$rows): ?><tr><td colspan="4" class="pb-muted">No categories yet.</td></tr><?php endif; ?>
+      </tbody>
+    </table>
+  </div>
+  <form method="post" class="pb-card">
+    <h3 class="pb-h3"><?= $ec ? 'Edit category' : 'New category' ?></h3>
+    <?= pb_csrf_field() ?><input type="hidden" name="do" value="category_save"><input type="hidden" name="id" value="<?= (int) ($ec['id'] ?? 0) ?>">
+    <label>Name<input name="name" required value="<?= pb_e($ec['name'] ?? '') ?>"></label>
+    <label>Slug<input name="slug" value="<?= pb_e($ec['slug'] ?? '') ?>" placeholder="auto"></label>
+    <label>Description<textarea name="description" rows="3"><?= pb_e($ec['description'] ?? '') ?></textarea></label>
+    <label>Order<input type="number" name="sort" value="<?= (int) ($ec['sort'] ?? 0) ?>"></label>
+    <button class="pb-btn pb-btn-primary">Save category</button>
+    <?php if ($ec): ?><a class="pb-btn" href="<?= pb_e(pb_admin_url('view=categories')) ?>">Cancel</a><?php endif; ?>
+  </form>
+</div>
+<?php
+
+} elseif ($view === 'users' && pb_can($user, 'user.manage')) {
+    $title = 'Users';
+    $rows = pb_all('SELECT u.*, (SELECT COUNT(*) FROM posts p WHERE p.author_id = u.id) AS n FROM users u ORDER BY u.active DESC, u.role, u.name');
+    $editId = (int) ($_GET['id'] ?? 0);
+    $eu = $editId ? pb_row('SELECT * FROM users WHERE id = ?', [$editId]) : null; ?>
+<div class="pb-two-col">
+  <div class="pb-card">
+    <table class="pb-table">
+      <thead><tr><th>Name</th><th>Role</th><th>Posts</th><th>Last sign-in</th><th></th></tr></thead>
+      <tbody>
+      <?php foreach ($rows as $u): ?>
+        <tr class="<?= (int) $u['active'] ? '' : 'pb-dim' ?>"><td><strong><?= pb_e($u['name']) ?></strong>
+            <div class="pb-small pb-muted"><?= $u['source'] === 'georank' ? 'Signs in through GeoRank' : pb_e($u['email']) ?></div></td>
+          <td><span class="pb-role pb-role-<?= pb_e($u['role']) ?>"><?= pb_e(pb_role_label($u['role'])) ?></span><?= (int) $u['active'] ? '' : ' <span class="pb-small pb-muted">(inactive)</span>' ?></td>
+          <td><?= (int) $u['n'] ?></td>
+          <td class="pb-small pb-muted"><?= $u['last_login_at'] ? pb_e(pb_format_date($u['last_login_at'], 'j M Y')) : '—' ?></td>
+          <td class="pb-right"><a class="pb-btn pb-btn-sm" href="<?= pb_e(pb_admin_url('view=users&id=' . (int) $u['id'])) ?>">Edit</a>
+          <?php if ((int) $u['id'] !== (int) $user['id']): ?>
+            <form method="post" class="pb-inline"><?= pb_csrf_field() ?><input type="hidden" name="do" value="user_toggle"><input type="hidden" name="id" value="<?= (int) $u['id'] ?>">
+              <button class="pb-btn pb-btn-sm"><?= (int) $u['active'] ? 'Deactivate' : 'Activate' ?></button></form>
+          <?php endif; ?></td></tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+    <div class="pb-roles-help pb-small">
+      <p><span class="pb-role pb-role-contributor">Contributor</span> writes drafts and submits them for review. Can't publish.</p>
+      <p><span class="pb-role pb-role-editor">Editor</span> edits any post, approves, schedules, requests changes, unpublishes, manages categories.</p>
+      <p><span class="pb-role pb-role-admin">Admin</span> everything, plus users, settings and permanent delete.</p>
+    </div>
+  </div>
+  <form method="post" class="pb-card" autocomplete="off">
+    <h3 class="pb-h3"><?= $eu ? 'Edit user' : 'Invite a writer' ?></h3>
+    <?= pb_csrf_field() ?><input type="hidden" name="do" value="user_save"><input type="hidden" name="id" value="<?= (int) ($eu['id'] ?? 0) ?>">
+    <label>Name<input name="name" required value="<?= pb_e($eu['name'] ?? '') ?>"></label>
+    <?php if ($eu && $eu['source'] === 'georank'): ?>
+      <p class="pb-small pb-muted">This account is used whenever someone signs in to GeoRank as <?= $eu['email'] === 'georank-admin@georank.local' ? 'Admin' : 'Editor' ?>. Its role follows GeoRank and the Settings page.</p>
+    <?php else: ?>
+    <label>Email<input type="email" name="email" required value="<?= pb_e($eu['email'] ?? '') ?>"></label>
+    <label>Role<select name="role">
+      <?php foreach (PB_ROLES as $r): ?><option value="<?= $r ?>"<?= ($eu['role'] ?? 'contributor') === $r ? ' selected' : '' ?>><?= pb_role_label($r) ?></option><?php endforeach; ?>
+    </select></label>
+    <label><?= $eu ? 'New password (leave blank to keep)' : 'Password' ?><input type="text" name="password" <?= $eu ? '' : 'required' ?> minlength="8" autocomplete="new-password"></label>
+    <?php endif; ?>
+    <button class="pb-btn pb-btn-primary">Save user</button>
+    <?php if ($eu): ?><a class="pb-btn" href="<?= pb_e(pb_admin_url('view=users')) ?>">Cancel</a><?php endif; ?>
+  </form>
+</div>
+<?php
+
+} elseif ($view === 'settings' && pb_can($user, 'settings.manage')) {
+    $title = 'Settings';
+    $s = function ($k) { return pb_setting($k); };
+    $stab = in_array($_GET['tab'] ?? '', ['general', 'design', 'navigation'], true) ? $_GET['tab'] : 'general';
+    $isGr = pb_is_georank_site(); ?>
+<div class="pb-tabs">
+  <?php foreach (['general' => 'General', 'design' => 'Design', 'navigation' => 'Navigation'] as $k => $label): ?>
+    <a href="<?= pb_e(pb_admin_url('view=settings&tab=' . $k)) ?>" class="<?= $k === $stab ? 'active' : '' ?>"><?= pb_e($label) ?></a>
+  <?php endforeach; ?>
+</div>
+<?php if ($stab === 'design'):
+    $fonts = pb_font_choices(); ?>
+<div class="pb-two-col">
+  <form method="post" class="pb-card" id="pbDesignForm">
+    <?= pb_csrf_field() ?><input type="hidden" name="do" value="design_save">
+    <h3 class="pb-h3">Images</h3>
+    <div class="pb-row pb-row-top">
+      <?= pb_image_field('design_social_image', $s('design_social_image'), 'Default social share image', 'Used for Facebook/WhatsApp/X previews, and on post cards, when a post has no image of its own. 1200×630 works best.') ?>
+      <?= pb_image_field('design_favicon', $s('design_favicon'), 'Blog favicon', 'Square PNG, at least 64×64. Leave empty to use the site\'s favicon.') ?>
+    </div>
+
+    <h3 class="pb-h3">Typography</h3>
+    <div class="pb-row">
+      <label>Body font<select name="design_font_body" data-preview="font-body">
+        <?php foreach ($fonts as $k => [$label, $stack]): ?><option value="<?= pb_e($k) ?>" data-stack="<?= pb_e($stack) ?>"<?= $s('design_font_body') === $k ? ' selected' : '' ?>><?= pb_e($label) ?></option><?php endforeach; ?>
+      </select></label>
+      <label>Heading font<select name="design_font_heading" data-preview="font-heading">
+        <?php foreach ($fonts as $k => [$label, $stack]): ?><option value="<?= pb_e($k) ?>" data-stack="<?= pb_e($stack) ?>"<?= $s('design_font_heading') === $k ? ' selected' : '' ?>><?= pb_e($label) ?></option><?php endforeach; ?>
+      </select></label>
+      <label>Text size<select name="design_font_size" data-preview="font-size">
+        <option value="">Site theme</option>
+        <?php foreach ([15, 16, 17, 18, 19, 20] as $px): ?><option value="<?= $px ?>"<?= (string) $s('design_font_size') === (string) $px ? ' selected' : '' ?>><?= $px ?>px</option><?php endforeach; ?>
+      </select></label>
+    </div>
+
+    <h3 class="pb-h3">Colours <span class="pb-small pb-muted">(empty = follow the site theme)</span></h3>
+    <div class="pb-row pb-row-top">
+      <?= pb_color_field('design_accent', $s('design_accent'), 'Accent (links, buttons)') ?>
+      <?= pb_color_field('design_text', $s('design_text'), 'Text') ?>
+    </div>
+    <div class="pb-row pb-row-top">
+      <?= pb_color_field('design_bg', $s('design_bg'), 'Page background') ?>
+      <?= pb_color_field('design_surface', $s('design_surface'), 'Card background') ?>
+    </div>
+    <button class="pb-btn pb-btn-primary">Save design</button>
+  </form>
+  <div class="pb-card pb-design-preview" id="pbDesignPreview">
+    <h3 class="pb-h3">Preview</h3>
+    <div class="pbp-page">
+      <h2 class="pbp-h">How to Choose Floor Tiles</h2>
+      <p class="pbp-p">Blog text looks like this, with a <a href="#" onclick="return false">link</a> in the accent colour.</p>
+      <div class="pbp-card"><strong class="pbp-h">Post card</strong><p class="pbp-p pbp-small">Short summary of the post…</p></div>
+      <span class="pbp-btn">Search</span>
+    </div>
+    <p class="pb-small pb-muted"><?= $isGr ? 'Empty values follow your GeoRank theme (Design tab), so the blog keeps matching the site.' : 'Empty values use the PostBase defaults.' ?></p>
+  </div>
+</div>
+<?php elseif ($stab === 'navigation'):
+    $navItems = pb_nav_items();
+    $cats = pb_all('SELECT name, slug FROM categories ORDER BY sort, name');
+    $quick = ['Site home' => pb_site_base_path() . '/', 'Blog' => PB_BASE_PATH . '/', 'Contact' => pb_site_base_path() . '/contact.html', 'About' => pb_site_base_path() . '/about.html', 'RSS feed' => pb_url('feed')];
+    foreach ($cats as $c) $quick['Category: ' . $c['name']] = pb_url('category', $c['slug']);
+    if (PB_BASE_PATH === '') unset($quick['Site home'], $quick['Contact'], $quick['About']); // blog is the site: use Pages instead
+    foreach (pb_all("SELECT title, slug FROM posts WHERE type = 'page' AND status = 'published' ORDER BY title") as $pg) {
+        $quick['Page: ' . $pg['title']] = pb_url('post', $pg['slug']);
+    } ?>
+<div class="pb-two-col">
+  <form method="post" class="pb-card" id="pbNavForm">
+    <?= pb_csrf_field() ?><input type="hidden" name="do" value="nav_save">
+    <table class="pb-table pb-nav-table">
+      <thead><tr><th>Label</th><th>Link</th><th title="Open in a new tab">New tab</th><th></th></tr></thead>
+      <tbody id="pbNavRows">
+      <?php foreach ($navItems as $it): ?>
+        <tr data-nav-row>
+          <td><input data-k="label" value="<?= pb_e($it['label']) ?>" maxlength="40" aria-label="Label"></td>
+          <td><input data-k="url" value="<?= pb_e($it['url']) ?>" aria-label="Link"></td>
+          <td class="pb-center"><input type="checkbox" data-k="new_tab" value="1"<?= !empty($it['new_tab']) ? ' checked' : '' ?> aria-label="Open in new tab"></td>
+          <td class="pb-right"><button type="button" class="pb-btn pb-btn-sm" data-nav-move="-1" title="Move up">↑</button><button type="button" class="pb-btn pb-btn-sm" data-nav-move="1" title="Move down">↓</button><button type="button" class="pb-btn pb-btn-sm pb-btn-danger" data-nav-remove title="Remove">✕</button></td>
+        </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+    <div class="pb-row pb-nav-add">
+      <button type="button" class="pb-btn pb-btn-sm" id="pbNavAdd">+ Add link</button>
+      <select id="pbNavQuick" aria-label="Quick add">
+        <option value="">Quick add…</option>
+        <?php foreach ($quick as $label => $url): ?><option value="<?= pb_e($url) ?>" data-label="<?= pb_e(preg_replace('/^Category: /', '', $label)) ?>"><?= pb_e($label) ?></option><?php endforeach; ?>
+      </select>
+    </div>
+    <label class="pb-check"><input type="checkbox" name="nav_show_georank" value="1"<?= $s('nav_show_georank') === '1' ? ' checked' : '' ?>> Also show this menu on GeoRank sites, as a slim bar under the site header</label>
+    <p class="pb-small pb-muted"><?= $isGr ? 'On this GeoRank site the main menu comes from GeoRank → Design → Menu. This list is used for the blog\'s own bar (if ticked) and the standalone layout.' : 'Shown in the blog header.' ?></p>
+    <div class="pb-row">
+      <button class="pb-btn pb-btn-primary">Save navigation</button>
+      <button class="pb-btn" name="reset" value="1" data-confirm="Replace the menu with the defaults (Home, Blog, Contact)?">Reset to defaults</button>
+    </div>
+    <template id="pbNavTpl"><tr data-nav-row>
+      <td><input data-k="label" maxlength="40" aria-label="Label"></td>
+      <td><input data-k="url" placeholder="/page.html or https://…" aria-label="Link"></td>
+      <td class="pb-center"><input type="checkbox" data-k="new_tab" value="1" aria-label="Open in new tab"></td>
+      <td class="pb-right"><button type="button" class="pb-btn pb-btn-sm" data-nav-move="-1" title="Move up">↑</button><button type="button" class="pb-btn pb-btn-sm" data-nav-move="1" title="Move down">↓</button><button type="button" class="pb-btn pb-btn-sm pb-btn-danger" data-nav-remove title="Remove">✕</button></td>
+    </tr></template>
+  </form>
+  <div class="pb-card">
+    <h3 class="pb-h3">Tips</h3>
+    <p class="pb-small">Links can be site pages (<code>/contact.html</code>), blog pages (<code><?= pb_e(PB_BASE_PATH) ?>/category/…/</code>) or other websites (<code>https://…</code>).</p>
+    <p class="pb-small">Up to 12 links. Empty rows are ignored when you save.</p>
+  </div>
+</div>
+<?php else:
+    $sqliteVer = (string) pb_db()->query('SELECT sqlite_version()')->fetchColumn(); ?>
+<div class="pb-two-col">
+  <form method="post" class="pb-card">
+    <?= pb_csrf_field() ?><input type="hidden" name="do" value="settings_save">
+    <h3 class="pb-h3">Blog</h3>
+    <label>Blog title<input name="blog_title" value="<?= pb_e($s('blog_title')) ?>"></label>
+    <label>Description<textarea name="blog_description" rows="2"><?= pb_e($s('blog_description')) ?></textarea></label>
+    <div class="pb-row">
+      <label>Posts per page<input type="number" min="1" max="48" name="posts_per_page" value="<?= pb_e($s('posts_per_page')) ?>"></label>
+      <label>Language<input name="language" value="<?= pb_e($s('language')) ?>" maxlength="10"></label>
+    </div>
+    <label>Timezone<input name="timezone" value="<?= pb_e($s('timezone')) ?>" list="pbTz"></label>
+    <datalist id="pbTz"><?php foreach (['Asia/Kolkata', 'UTC', 'Asia/Dubai', 'Asia/Singapore', 'Europe/London', 'America/New_York', 'America/Los_Angeles', 'Australia/Sydney'] as $tz): ?><option value="<?= $tz ?>"><?php endforeach; ?></datalist>
+    <label class="pb-check"><input type="checkbox" name="show_author" value="1"<?= $s('show_author') === '1' ? ' checked' : '' ?>> Show author name on posts</label>
+
+    <h3 class="pb-h3">Layout &amp; URLs</h3>
+    <label>Layout<select name="layout">
+      <option value="auto"<?= $s('layout') === 'auto' ? ' selected' : '' ?>>Automatic (use the GeoRank site design when found)</option>
+      <option value="georank"<?= $s('layout') === 'georank' ? ' selected' : '' ?>>GeoRank site header, footer and theme</option>
+      <option value="standalone"<?= $s('layout') === 'standalone' ? ' selected' : '' ?>>Standalone PostBase layout</option>
+    </select></label>
+    <label class="pb-check"><input type="checkbox" name="pretty_urls" value="1"<?= $s('pretty_urls') === '1' ? ' checked' : '' ?>> Clean URLs (<code><?= pb_e(PB_BASE_PATH) ?>/my-post/</code>) — needs Apache mod_rewrite</label>
+    <label>Site URL <span class="pb-muted pb-small">(optional, e.g. https://example.com — used for canonical links, RSS and sitemap)</span><input name="site_url" value="<?= pb_e($s('site_url')) ?>" placeholder="<?= pb_e(pb_origin()) ?>"></label>
+
+    <h3 class="pb-h3">GeoRank sign-in</h3>
+    <label class="pb-check"><input type="checkbox" name="georank_sso" value="1"<?= $s('georank_sso') === '1' ? ' checked' : '' ?>> Let people signed in to GeoRank use the blog without a separate login</label>
+    <label>GeoRank Editors become<select name="georank_editor_role">
+      <?php foreach (PB_ROLES as $r): ?><option value="<?= $r ?>"<?= $s('georank_editor_role') === $r ? ' selected' : '' ?>><?= pb_role_label($r) ?></option><?php endforeach; ?>
+    </select></label>
+    <button class="pb-btn pb-btn-primary">Save settings</button>
+  </form>
+  <div>
+    <div class="pb-card">
+      <h3 class="pb-h3">Links</h3>
+      <p class="pb-small">Blog: <a href="<?= pb_e(pb_url()) ?>" target="_blank"><?= pb_e(pb_abs_url(pb_url())) ?></a></p>
+      <p class="pb-small">RSS: <a href="<?= pb_e(pb_url('feed')) ?>" target="_blank"><?= pb_e(pb_abs_url(pb_url('feed'))) ?></a></p>
+      <p class="pb-small">Sitemap: <a href="<?= pb_e(pb_url('sitemap')) ?>" target="_blank"><?= pb_e(pb_abs_url(pb_url('sitemap'))) ?></a></p>
+      <form method="post"><?= pb_csrf_field() ?><input type="hidden" name="do" value="robots_sitemap">
+        <button class="pb-btn pb-btn-sm">Add blog sitemap to robots.txt</button></form>
+      <p class="pb-small pb-muted">Tip: add a "Blog" link pointing to <code><?= pb_e(PB_BASE_PATH) ?>/</code> in GeoRank → Design → Menu, and submit the sitemap in Google Search Console.</p>
+    </div>
+    <div class="pb-card">
+      <h3 class="pb-h3">System</h3>
+      <p class="pb-small">PostBase <?= pb_e(PB_VERSION) ?> · PHP <?= pb_e(PHP_VERSION) ?> · SQLite <?= pb_e($sqliteVer) ?></p>
+      <p class="pb-small">GeoRank site: <?= $isGr ? '<strong>detected</strong> — using its header, footer and theme' : 'not detected' ?></p>
+      <p class="pb-small">Image resizing: <?= function_exists('imagecreatetruecolor') ? 'on (GD)' : 'off — GD extension missing' ?></p>
+      <p class="pb-small pb-muted">Back up <code>data/postbase.sqlite</code> and the <code>uploads/</code> folder to back up the whole blog.</p>
+      <p class="pb-small">Help, guides and support: <a href="<?= PB_HOMEPAGE ?>" target="_blank" rel="noopener">postbase.top</a> · Report a bug: <a href="<?= PB_REPO_URL ?>/issues" target="_blank" rel="noopener">GitHub Issues</a></p>
+    </div>
+  </div>
+</div>
+<?php endif;
+
+} elseif ($view === 'account') {
+    $title = 'My account'; ?>
+<form method="post" class="pb-card pb-narrow">
+  <?= pb_csrf_field() ?><input type="hidden" name="do" value="account_save">
+  <p><span class="pb-role pb-role-<?= pb_e($user['role']) ?>"><?= pb_e(pb_role_label($user['role'])) ?></span>
+    <?= $user['source'] === 'georank' ? '<span class="pb-small pb-muted">Signed in through GeoRank</span>' : '<span class="pb-small pb-muted">' . pb_e($user['email']) . '</span>' ?></p>
+  <label>Display name (shown on your posts)<input name="name" required value="<?= pb_e($user['name']) ?>"></label>
+  <label>Short bio<textarea name="bio" rows="3"><?= pb_e($user['bio']) ?></textarea></label>
+  <?php if ($user['source'] === 'local'): ?>
+    <h3 class="pb-h3">Change password</h3>
+    <label>Current password<input type="password" name="current_password" autocomplete="current-password"></label>
+    <label>New password<input type="password" name="new_password" minlength="8" autocomplete="new-password"></label>
+  <?php endif; ?>
+  <button class="pb-btn pb-btn-primary">Save</button>
+</form>
+<?php
+
+} else {
+    // ---- posts list --------------------------------------------------------
+    $view = 'posts';
+    $tab = (string) ($_GET['tab'] ?? ($isEditor && $pendingCount ? 'pending' : 'all'));
+    $mine = !$isEditor || !empty($_GET['mine']);
+    $ptype = $isEditor && ($_GET['type'] ?? '') === 'page' ? 'page' : 'post';
+    $typeQs = $ptype === 'page' ? '&type=page' : '';
+    $now = pb_now();
+    $tabs = [
+        'all' => ['All', "p.status != 'archived'"],
+        'draft' => ['Drafts', "p.status = 'draft'"],
+        'pending' => ['Pending review', "p.status = 'pending'"],
+        'changes_requested' => ['Changes requested', "p.status = 'changes_requested'"],
+        'scheduled' => ['Scheduled', "p.status = 'published' AND p.published_at > :now"],
+        'published' => ['Published', "p.status = 'published' AND p.published_at <= :now"],
+        'archived' => ['Archived', "p.status = 'archived'"],
+    ];
+    if (!isset($tabs[$tab])) $tab = 'all';
+    $scope = ($mine ? ' AND p.author_id = ' . (int) $user['id'] : '') . " AND p.type = '" . $ptype . "'";
+    $counts = [];
+    foreach ($tabs as $k => [$label, $cond]) {
+        $params = strpos($cond, ':now') !== false ? ['now' => $now] : [];
+        $counts[$k] = (int) pb_val("SELECT COUNT(*) FROM posts p WHERE {$cond}{$scope}", $params);
+    }
+    $cond = $tabs[$tab][1];
+    $params = strpos($cond, ':now') !== false ? ['now' => $now] : [];
+    $rows = pb_all("SELECT p.id, p.title, p.slug, p.status, p.published_at, p.updated_at, p.submitted_at, p.pinned, u.name AS author_name, c.name AS category_name
+                    FROM posts p JOIN users u ON u.id = p.author_id LEFT JOIN categories c ON c.id = p.category_id
+                    WHERE {$cond}{$scope} ORDER BY " . ($tab === 'pending' ? 'p.submitted_at ASC' : 'p.updated_at DESC') . ' LIMIT 200', $params);
+    $title = $ptype === 'page' ? 'Pages' : ($mine && !$isEditor ? 'My posts' : 'Posts'); ?>
+<div class="pb-tabs">
+  <?php foreach ($tabs as $k => [$label]): if ($k !== 'all' && $k !== $tab && !$counts[$k]) continue; ?>
+    <a href="<?= pb_e(pb_admin_url('tab=' . $k . $typeQs . ($mine && $isEditor ? '&mine=1' : ''))) ?>" class="<?= $k === $tab ? 'active' : '' ?>"><?= pb_e($label) ?> <span><?= $counts[$k] ?></span></a>
+  <?php endforeach; ?>
+  <?php if ($ptype === 'page'): ?>
+    <a class="pb-tabs-right pb-btn pb-btn-primary pb-btn-sm" href="<?= pb_e(pb_admin_url('view=edit&type=page')) ?>">+ New page</a>
+  <?php elseif ($isEditor): ?>
+    <a class="pb-tabs-right" href="<?= pb_e(pb_admin_url('tab=' . $tab . ($mine ? '' : '&mine=1'))) ?>"><?= $mine ? 'Show everyone\'s posts' : 'Only my posts' ?></a>
+  <?php endif; ?>
+</div>
+<div class="pb-card pb-flush">
+<?php if ($rows): ?>
+  <table class="pb-table pb-posts">
+    <thead><tr><th>Title</th><th>Status</th><?php if (!$mine): ?><th>Author</th><?php endif; ?><th>Updated</th></tr></thead>
+    <tbody>
+    <?php foreach ($rows as $r): ?>
+      <tr><td><a class="pb-post-link" href="<?= pb_e(pb_admin_url('view=edit&id=' . (int) $r['id'])) ?>"><?= pb_e($r['title']) ?></a><?= !empty($r['pinned']) ? ' <span class="pb-pin" title="Pinned as Featured on the blog home">📌 Featured</span>' : '' ?>
+          <?php if ($ptype === 'page'): ?><div class="pb-small pb-muted"><?= pb_e(pb_url('post', $r['slug'])) ?></div><?php endif; ?>
+          <?php if ($r['category_name']): ?><div class="pb-small pb-muted"><?= pb_e($r['category_name']) ?></div><?php endif; ?></td>
+        <td><?= pb_status_badge($r['status'], $r['published_at']) ?>
+          <?php if ($r['status'] === 'published' && $r['published_at'] > $now): ?><div class="pb-small pb-muted"><?= pb_e(pb_format_date($r['published_at'], 'j M, g:i a')) ?></div><?php endif; ?></td>
+        <?php if (!$mine): ?><td class="pb-small"><?= pb_e($r['author_name']) ?></td><?php endif; ?>
+        <td class="pb-small pb-muted"><?= pb_e(pb_format_date($r['updated_at'], 'j M Y')) ?></td></tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+<?php else: ?>
+  <div class="pb-empty-admin">
+    <p><?= $tab === 'pending' ? 'Nothing waiting for review. 🎉' : ($ptype === 'page' ? 'No pages yet. Pages are for About, Contact, Support and similar — they don\'t appear in the blog list.' : 'No posts here yet.') ?></p>
+    <a class="pb-btn pb-btn-primary" href="<?= pb_e(pb_admin_url($ptype === 'page' ? 'view=edit&type=page' : 'view=edit')) ?>"><?= $ptype === 'page' ? '+ New page' : '✍️ Write a post' ?></a>
+  </div>
+<?php endif; ?>
+</div>
+<?php
+}
+$content = ob_get_clean();
+
+// ============================================================================
+// ADMIN SHELL
+// ============================================================================
+$flashes = $_SESSION['pb_flash'] ?? [];
+unset($_SESSION['pb_flash']);
+$georankUrl = pb_georank_session_role() !== null ? pb_georank_admin_url() : null;
+$nav = [
+    ['edit', 'Write', '✏️', true],
+    ['posts', $isEditor ? 'Posts' : 'My posts', '📄', true],
+    ['pages', 'Pages', '📑', $isEditor],
+    ['categories', 'Categories', '🏷️', $isEditor],
+    ['users', 'Users', '👥', pb_can($user, 'user.manage')],
+    ['settings', 'Settings', '⚙️', pb_can($user, 'settings.manage')],
+    ['account', 'My account', '🙂', true],
+];
+?><!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title><?= pb_e($title) ?> · <?= pb_e(pb_setting('blog_title')) ?> · PostBase</title>
+<link rel="icon" href="<?= pb_e(PB_BASE_PATH) ?>/assets/favicon.png" type="image/png">
+<link rel="apple-touch-icon" href="<?= pb_e(PB_BASE_PATH) ?>/assets/apple-touch-icon.png">
+<link rel="stylesheet" href="<?= pb_e(PB_BASE_PATH) ?>/assets/admin.css?v=<?= pb_e(PB_VERSION) ?>">
+</head>
+<body class="pb-admin">
+<div class="pb-shell">
+  <aside class="pb-sidebar">
+    <a class="pb-logo" href="<?= pb_e(pb_admin_url()) ?>" aria-label="Unnati PostBase"><img src="<?= pb_e(PB_BASE_PATH) ?>/assets/favicon.png" alt="" width="38" height="38"><span class="pb-wordmark"><small>Unnati</small><span>Post<b>Base</b></span></span></a>
+    <nav>
+      <?php foreach ($nav as [$key, $label, $icon, $show]): if (!$show) continue;
+        $onPages = ($_GET['type'] ?? '') === 'page';
+        $active = $key === 'pages' ? ($view === 'posts' && $onPages)
+                : ($view === $key && !($key === 'edit' && (!empty($_GET['id']) || $onPages)) && !($key === 'posts' && $onPages)); ?>
+        <a href="<?= pb_e(pb_admin_url($key === 'pages' ? 'view=posts&type=page' : 'view=' . $key)) ?>" class="<?= $active ? 'active' : '' ?>"><span aria-hidden="true"><?= $icon ?></span> <?= pb_e($label) ?>
+          <?php if ($key === 'posts' && ($pendingCount || $myChanges)): ?><em class="pb-count-badge" title="<?= $isEditor ? 'Waiting for your review' : 'Changes requested' ?>"><?= $isEditor ? $pendingCount : $myChanges ?></em><?php endif; ?></a>
+      <?php endforeach; ?>
+    </nav>
+    <div class="pb-sidebar-foot">
+      <?php if ($georankUrl): ?><a href="<?= pb_e($georankUrl) ?>">← GeoRank dashboard</a><?php endif; ?>
+      <a href="<?= pb_e(pb_url()) ?>" target="_blank" rel="noopener">View blog ↗</a>
+    </div>
+  </aside>
+  <div class="pb-main">
+    <header class="pb-topbar">
+      <h1><?= pb_e($title) ?></h1>
+      <div class="pb-user">
+        <span><?= pb_e($user['name']) ?> <span class="pb-role pb-role-<?= pb_e($user['role']) ?>"><?= pb_e(pb_role_label($user['role'])) ?></span></span>
+        <?php if (!empty($_SESSION['pb_uid'])): ?><a href="<?= pb_e(pb_admin_url('logout=' . pb_csrf_token())) ?>">Log out</a><?php endif; ?>
+      </div>
+    </header>
+    <?php foreach ($flashes as [$type, $msg]): ?>
+      <div class="pb-flash pb-flash-<?= pb_e($type) ?>" role="status"><?= pb_e($msg) ?></div>
+    <?php endforeach; ?>
+    <?= $content ?>
+    <footer class="pb-admin-foot">Unnati PostBase <?= pb_e(PB_VERSION) ?> · <a href="<?= PB_HOMEPAGE ?>" target="_blank" rel="noopener">Help &amp; support</a> · <a href="<?= PB_REPO_URL ?>" target="_blank" rel="noopener">GitHub</a></footer>
+  </div>
+</div>
+<script>window.PB = <?= json_encode(['csrf' => pb_csrf_token(), 'endpoint' => pb_admin_url(), 'maxMb' => pb_config('max_upload_mb')]) ?>;</script>
+<script src="<?= pb_e(PB_BASE_PATH) ?>/assets/paste.js?v=<?= pb_e(PB_VERSION) ?>"></script>
+<script src="<?= pb_e(PB_BASE_PATH) ?>/assets/admin.js?v=<?= pb_e(PB_VERSION) ?>"></script>
+</body>
+</html>
+<?php
+
+// ----------------------------------------------------------------------------
+// Minimal page for setup/login (defined at the bottom; PHP hoists functions).
+// ----------------------------------------------------------------------------
+function pb_auth_page($heading, $error, callable $body) {
+    ?><!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title><?= pb_e($heading) ?> · PostBase</title>
+<link rel="icon" href="<?= pb_e(PB_BASE_PATH) ?>/assets/favicon.png" type="image/png">
+<link rel="apple-touch-icon" href="<?= pb_e(PB_BASE_PATH) ?>/assets/apple-touch-icon.png">
+<link rel="stylesheet" href="<?= pb_e(PB_BASE_PATH) ?>/assets/admin.css?v=<?= pb_e(PB_VERSION) ?>">
+</head>
+<body class="pb-admin pb-auth">
+  <div class="pb-auth-box">
+    <div class="pb-logo pb-logo-lg" role="img" aria-label="Unnati PostBase"><img src="<?= pb_e(PB_BASE_PATH) ?>/assets/apple-touch-icon.png" alt="" width="72" height="72"><span class="pb-wordmark"><small>Unnati</small><span>Post<b>Base</b></span></span></div>
+    <p class="pb-tagline">Write simple, post fast</p>
+    <div class="pb-card">
+      <h1 class="pb-h2"><?= pb_e($heading) ?></h1>
+      <?php if ($error): ?><div class="pb-flash pb-flash-error"><?= pb_e($error) ?></div><?php endif; ?>
+      <?php $body(); ?>
+    </div>
+  </div>
+</body>
+</html>
+<?php
+}

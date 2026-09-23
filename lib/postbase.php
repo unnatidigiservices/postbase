@@ -1,0 +1,983 @@
+<?php
+/**
+ * Unnati PostBase — core library (config, database, auth, roles, posts).
+ *
+ * SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-PostBase-Commercial
+ * Copyright (c) 2026 Unnati Digi Services. See LICENSE and COMMERCIAL-LICENSE.md.
+ *
+ * Every entry point (index.php, admin/index.php) defines PB_ROOT and
+ * PB_BASE_PATH before requiring this file.
+ */
+if (!defined('PB_ROOT')) { http_response_code(403); exit; }
+
+define('PB_VERSION', '0.12.0');
+define('PB_HOMEPAGE', 'https://postbase.top');                             // project info, docs and support
+define('PB_REPO_URL', 'https://github.com/unnatidigiservices/postbase');    // source code and issues
+define('PB_SCHEMA_VERSION', 2);
+define('PB_DATA_DIR', PB_ROOT . '/data');
+define('PB_UPLOAD_DIR', PB_ROOT . '/uploads');
+// The site's web root: PB_ROOT itself when PostBase runs at a domain root
+// (e.g. postbase.top), its parent for /blog/, two levels up for /news/blog/.
+define('PB_SITE_DIR', PB_BASE_PATH === '' ? PB_ROOT : dirname(PB_ROOT, substr_count(trim(PB_BASE_PATH, '/'), '/') + 1));
+define('PB_SESSION_LIFETIME', 12 * 60 * 60); // matches GeoRank so a shared session is never cut short
+define('PB_ROLES', ['contributor', 'editor', 'admin']);
+define('PB_STATUSES', ['draft', 'pending', 'changes_requested', 'published', 'archived']);
+define('PB_RESERVED_SLUGS', ['admin', 'assets', 'data', 'lib', 'uploads', 'tools', 'docs', 'page', 'category', 'feed', 'feed.xml', 'sitemap.xml', 'robots.txt', 'search', 'index.php']);
+
+// ----------------------------------------------------------------------------
+// CONFIG — optional config.php (see config.sample.php) overrides these.
+// Everything a site owner changes day to day lives in the settings table.
+// ----------------------------------------------------------------------------
+$PB_CONFIG = [
+    'db_path'   => PB_DATA_DIR . '/postbase.sqlite',
+    'setup_key' => '',          // if set, first-run setup asks for it
+    'max_upload_mb' => 5,
+    'max_image_px'  => 1600,
+];
+if (is_file(PB_ROOT . '/config.php')) {
+    $pbUserConfig = include PB_ROOT . '/config.php';
+    if (is_array($pbUserConfig)) $PB_CONFIG = array_merge($PB_CONFIG, $pbUserConfig);
+}
+function pb_config($key) {
+    global $PB_CONFIG;
+    return $PB_CONFIG[$key] ?? null;
+}
+
+// ----------------------------------------------------------------------------
+// SMALL HELPERS
+// ----------------------------------------------------------------------------
+function pb_e($s) {
+    return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8');
+}
+function pb_now() {
+    return gmdate('Y-m-d H:i:s');
+}
+function pb_fatal($msg) {
+    http_response_code(500);
+    echo '<!DOCTYPE html><meta charset="utf-8"><title>PostBase error</title>'
+       . '<div style="font:16px/1.5 system-ui,sans-serif;max-width:640px;margin:60px auto;padding:0 20px">'
+       . '<h1 style="font-size:22px">PostBase can\'t start</h1><p>' . pb_e($msg) . '</p></div>';
+    exit;
+}
+function pb_is_https() {
+    if (!empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off') return true;
+    if (strtolower($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https') return true;
+    return (string) ($_SERVER['SERVER_PORT'] ?? '') === '443';
+}
+// Scheme + host of the site. The "site_url" setting wins when set, so
+// canonicals, the sitemap and the RSS feed never depend on a Host header.
+function pb_origin() {
+    $fixed = rtrim((string) pb_setting('site_url'), '/');
+    if ($fixed !== '') return preg_replace('~^(https?://[^/]+).*$~i', '$1', $fixed);
+    $host = preg_replace('/[^a-z0-9.\-:\[\]]/i', '', $_SERVER['HTTP_HOST'] ?? 'localhost');
+    return (pb_is_https() ? 'https' : 'http') . '://' . $host;
+}
+// Path of the site root the blog sits under ('' when the blog is /blog/).
+function pb_site_base_path() {
+    $p = rtrim(str_replace('\\', '/', dirname(PB_BASE_PATH === '' ? '/' : PB_BASE_PATH)), '/');
+    return $p === '.' ? '' : $p;
+}
+function pb_slugify($text, $max = 80) {
+    $text = (string) $text;
+    if (function_exists('iconv')) {
+        $t = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $text);
+        if ($t !== false && trim($t) !== '') $text = $t;
+    }
+    $text = strtolower($text);
+    $text = preg_replace('/[^a-z0-9]+/', '-', $text);
+    $text = trim(substr(trim($text, '-'), 0, $max), '-');
+    return $text;
+}
+function pb_text_excerpt($html, $len = 160) {
+    $t = html_entity_decode(strip_tags(preg_replace('/<(br|\/p|\/h[1-6]|\/li)[^>]*>/i', ' ', (string) $html)), ENT_QUOTES, 'UTF-8');
+    $t = trim(preg_replace('/\s+/u', ' ', $t));
+    if (function_exists('mb_strlen') ? mb_strlen($t) <= $len : strlen($t) <= $len) return $t;
+    $cut = function_exists('mb_substr') ? mb_substr($t, 0, $len) : substr($t, 0, $len);
+    $sp = strrpos($cut, ' ');
+    if ($sp !== false && $sp > $len * 0.6) $cut = substr($cut, 0, $sp);
+    return rtrim($cut, " ,.;:-") . '…';
+}
+function pb_reading_minutes($html) {
+    $words = str_word_count(strip_tags((string) $html));
+    return max(1, (int) round($words / 200));
+}
+function pb_format_date($utc, $format = 'j M Y') {
+    if (!$utc) return '';
+    try {
+        $d = new DateTime($utc, new DateTimeZone('UTC'));
+        $d->setTimezone(new DateTimeZone(pb_setting('timezone') ?: 'UTC'));
+        return $d->format($format);
+    } catch (Exception $e) {
+        return '';
+    }
+}
+// Local "Y-m-d\TH:i" (from <input type=datetime-local>) -> UTC storage string.
+function pb_local_to_utc($local) {
+    $local = trim((string) $local);
+    if ($local === '') return null;
+    try {
+        $d = new DateTime($local, new DateTimeZone(pb_setting('timezone') ?: 'UTC'));
+        $d->setTimezone(new DateTimeZone('UTC'));
+        return $d->format('Y-m-d H:i:s');
+    } catch (Exception $e) {
+        return null;
+    }
+}
+
+// ----------------------------------------------------------------------------
+// SESSION — shares GeoRank's PHP session (same cookie, same lifetime) so a
+// GeoRank admin/editor lands in PostBase already signed in.
+// ----------------------------------------------------------------------------
+function pb_session_start() {
+    if (session_status() === PHP_SESSION_ACTIVE) return;
+    ini_set('session.gc_maxlifetime', (string) PB_SESSION_LIFETIME);
+    $p = session_get_cookie_params();
+    $p['lifetime'] = PB_SESSION_LIFETIME;
+    $p['httponly'] = true;
+    if (empty($p['samesite'])) $p['samesite'] = 'Lax';
+    if (pb_is_https()) $p['secure'] = true;
+    session_set_cookie_params($p);
+    session_start();
+}
+function pb_csrf_token() {
+    if (empty($_SESSION['pb_csrf'])) $_SESSION['pb_csrf'] = bin2hex(random_bytes(16));
+    return $_SESSION['pb_csrf'];
+}
+function pb_csrf_check() {
+    $sent = $_POST['_csrf'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
+    if (!is_string($sent) || empty($_SESSION['pb_csrf']) || !hash_equals($_SESSION['pb_csrf'], $sent)) {
+        http_response_code(400);
+        exit('Security token expired. Go back, reload the page and try again.');
+    }
+}
+
+// ----------------------------------------------------------------------------
+// DATABASE — SQLite via PDO. See docs/DATABASE.md for why.
+// ----------------------------------------------------------------------------
+function pb_db() {
+    static $pdo = null;
+    if ($pdo) return $pdo;
+    if (!class_exists('PDO') || !in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+        pb_fatal('The PHP "pdo_sqlite" extension is not enabled on this server. Enable it in your hosting control panel (PHP extensions), then reload.');
+    }
+    $path = pb_config('db_path');
+    $dir = dirname($path);
+    if (!is_dir($dir) && !@mkdir($dir, 0755, true)) pb_fatal('Could not create the data folder: ' . $dir);
+    if (!is_writable($dir)) pb_fatal('The data folder is not writable: ' . $dir);
+    try {
+        $pdo = new PDO('sqlite:' . $path, null, null, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
+        $pdo->exec('PRAGMA foreign_keys = ON');
+        $pdo->exec('PRAGMA busy_timeout = 5000');
+        try { $pdo->exec('PRAGMA journal_mode = WAL'); } catch (Exception $e) { /* some network filesystems refuse WAL; rollback journal is fine */ }
+        pb_migrate($pdo);
+    } catch (PDOException $e) {
+        pb_fatal('Database error: ' . $e->getMessage());
+    }
+    return $pdo;
+}
+function pb_migrate(PDO $pdo) {
+    $v = (int) $pdo->query('PRAGMA user_version')->fetchColumn();
+    if ($v >= PB_SCHEMA_VERSION) return;
+    $pdo->beginTransaction();
+    if ($v < 1) {
+        $pdo->exec("
+            CREATE TABLE users (
+                id            INTEGER PRIMARY KEY,
+                email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                name          TEXT NOT NULL,
+                password_hash TEXT,
+                role          TEXT NOT NULL CHECK (role IN ('contributor','editor','admin')),
+                active        INTEGER NOT NULL DEFAULT 1,
+                source        TEXT NOT NULL DEFAULT 'local',
+                bio           TEXT NOT NULL DEFAULT '',
+                created_at    TEXT NOT NULL,
+                last_login_at TEXT
+            );
+            CREATE TABLE categories (
+                id          INTEGER PRIMARY KEY,
+                slug        TEXT NOT NULL UNIQUE,
+                name        TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                sort        INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE posts (
+                id                 INTEGER PRIMARY KEY,
+                slug               TEXT NOT NULL UNIQUE,
+                title              TEXT NOT NULL,
+                excerpt            TEXT NOT NULL DEFAULT '',
+                body               TEXT NOT NULL DEFAULT '',
+                cover_image        TEXT NOT NULL DEFAULT '',
+                cover_alt          TEXT NOT NULL DEFAULT '',
+                category_id        INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+                author_id          INTEGER NOT NULL REFERENCES users(id),
+                status             TEXT NOT NULL DEFAULT 'draft'
+                                   CHECK (status IN ('draft','pending','changes_requested','published','archived')),
+                seo_title          TEXT NOT NULL DEFAULT '',
+                seo_description    TEXT NOT NULL DEFAULT '',
+                created_at         TEXT NOT NULL,
+                updated_at         TEXT NOT NULL,
+                submitted_at       TEXT,
+                published_at       TEXT,
+                first_published_at TEXT,
+                reviewed_by        INTEGER REFERENCES users(id)
+            );
+            CREATE INDEX idx_posts_public ON posts(status, published_at);
+            CREATE INDEX idx_posts_author ON posts(author_id, status);
+            CREATE TABLE post_events (
+                id         INTEGER PRIMARY KEY,
+                post_id    INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                user_id    INTEGER REFERENCES users(id),
+                action     TEXT NOT NULL,
+                note       TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX idx_events_post ON post_events(post_id, id);
+            CREATE TABLE settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE login_attempts (
+                ip           TEXT NOT NULL,
+                attempted_at INTEGER NOT NULL
+            );
+        ");
+    }
+    if ($v < 2) {
+        // 0.11: pages (About, Contact… — same editor and workflow, no blog
+        // listing) and pinned posts (featured at the top of the blog home).
+        $pdo->exec("ALTER TABLE posts ADD COLUMN type TEXT NOT NULL DEFAULT 'post' CHECK (type IN ('post','page'))");
+        $pdo->exec('ALTER TABLE posts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+        $pdo->exec('CREATE INDEX idx_posts_type ON posts(type, status, published_at)');
+    }
+    // Future schema changes go here as: if ($v < 3) { ... }
+    $pdo->exec('PRAGMA user_version = ' . (int) PB_SCHEMA_VERSION);
+    $pdo->commit();
+}
+function pb_q($sql, array $params = []) {
+    $st = pb_db()->prepare($sql);
+    foreach ($params as $k => $v) {
+        $name = is_int($k) ? $k + 1 : (strpos($k, ':') === 0 ? $k : ':' . $k);
+        $type = is_int($v) ? PDO::PARAM_INT : ($v === null ? PDO::PARAM_NULL : PDO::PARAM_STR);
+        $st->bindValue($name, $v, $type);
+    }
+    $st->execute();
+    return $st;
+}
+function pb_row($sql, array $params = []) {
+    $r = pb_q($sql, $params)->fetch();
+    return $r === false ? null : $r;
+}
+function pb_all($sql, array $params = []) {
+    return pb_q($sql, $params)->fetchAll();
+}
+function pb_val($sql, array $params = []) {
+    return pb_q($sql, $params)->fetchColumn();
+}
+
+// ----------------------------------------------------------------------------
+// SETTINGS
+// ----------------------------------------------------------------------------
+function pb_settings_defaults() {
+    return [
+        'blog_title'          => 'Blog',
+        'blog_description'    => 'News, tips and updates from our team.',
+        'posts_per_page'      => '9',
+        'layout'              => 'auto',          // auto | georank | standalone
+        'timezone'            => 'Asia/Kolkata',
+        'pretty_urls'         => '1',
+        'site_url'            => '',
+        'language'            => 'en',
+        'show_author'         => '1',
+        'georank_sso'         => '1',
+        'georank_editor_role' => 'editor',        // what a GeoRank "Editor" login becomes here
+        // Settings → Design. Empty = inherit (GeoRank site theme, or PostBase defaults).
+        'design_social_image' => '',
+        'design_favicon'      => '',
+        'design_font_body'    => '',
+        'design_font_heading' => '',
+        'design_font_size'    => '',
+        'design_accent'       => '',
+        'design_text'         => '',
+        'design_bg'           => '',
+        'design_surface'      => '',
+        // Settings → Navigation. JSON list of {label, url, new_tab}; '' = defaults.
+        'nav_items'           => '',
+        'nav_show_georank'    => '0',
+    ];
+}
+
+// Font choices for Settings → Design. Web-safe stacks only, so the blog never
+// loads a third-party font (same set GeoRank offers).
+function pb_font_choices() {
+    return [
+        ''          => ['Site theme (inherit)', ''],
+        'system'    => ['System UI', 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'],
+        'arial'     => ['Arial', 'Arial, Helvetica, sans-serif'],
+        'helvetica' => ['Helvetica', 'Helvetica, Arial, sans-serif'],
+        'verdana'   => ['Verdana', 'Verdana, Geneva, sans-serif'],
+        'tahoma'    => ['Tahoma', 'Tahoma, Verdana, sans-serif'],
+        'trebuchet' => ['Trebuchet MS', '"Trebuchet MS", Helvetica, sans-serif'],
+        'georgia'   => ['Georgia (serif)', 'Georgia, "Times New Roman", serif'],
+        'palatino'  => ['Palatino (serif)', '"Palatino Linotype", Palatino, "Book Antiqua", serif'],
+    ];
+}
+function pb_valid_hex($v) {
+    $v = trim((string) $v);
+    return preg_match('/^#[0-9a-fA-F]{6}$/', $v) ? strtolower($v) : '';
+}
+
+// Navigation links shown in the standalone header (and, optionally, as a slim
+// bar on GeoRank sites). Defaults: site home, blog, contact.
+function pb_nav_defaults() {
+    $site = pb_site_base_path();
+    if (PB_BASE_PATH === '') { // blog is the whole site: no separate home or contact page
+        return [
+            ['label' => 'Home', 'url' => '/', 'new_tab' => false],
+            ['label' => 'RSS', 'url' => pb_url('feed'), 'new_tab' => false],
+        ];
+    }
+    return [
+        ['label' => 'Home', 'url' => $site . '/', 'new_tab' => false],
+        ['label' => 'Blog', 'url' => PB_BASE_PATH . '/', 'new_tab' => false],
+        ['label' => 'Contact', 'url' => $site . '/contact.html', 'new_tab' => false],
+    ];
+}
+function pb_nav_items() {
+    $raw = (string) pb_setting('nav_items');
+    $items = $raw !== '' ? json_decode($raw, true) : null;
+    return is_array($items) ? $items : pb_nav_defaults();
+}
+// Cleans a submitted nav list: drops blank rows and unsafe URLs, caps at 12 links.
+function pb_nav_clean(array $rows) {
+    $out = [];
+    foreach ($rows as $r) {
+        $label = trim((string) ($r['label'] ?? ''));
+        $url = trim((string) ($r['url'] ?? ''));
+        if ($label === '' || $url === '' || pb_safe_url($url) === null) continue;
+        $out[] = ['label' => substr($label, 0, 40), 'url' => substr($url, 0, 300), 'new_tab' => !empty($r['new_tab'])];
+        if (count($out) >= 12) break;
+    }
+    return $out;
+}
+
+// Image for cards, og:image and JSON-LD: the post's cover, else the first
+// image in its body, else the blog's default social image (Settings → Design).
+function pb_post_image($post) {
+    if (!empty($post['cover_image'])) return $post['cover_image'];
+    if (preg_match('/<img\b[^>]*\bsrc="([^"]+)"/i', (string) ($post['body'] ?? ''), $m)) {
+        $src = html_entity_decode($m[1], ENT_QUOTES, 'UTF-8');
+        if (pb_safe_url($src) !== null) return $src;
+    }
+    return (string) pb_setting('design_social_image');
+}
+function pb_setting($key) {
+    static $cache = null;
+    if ($key === null) { $cache = null; return null; } // cache reset
+    if ($cache === null) {
+        $cache = pb_settings_defaults();
+        foreach (pb_all('SELECT key, value FROM settings') as $r) $cache[$r['key']] = $r['value'];
+    }
+    return $cache[$key] ?? null;
+}
+function pb_settings_save(array $values) {
+    $st = pb_db()->prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+    foreach ($values as $k => $v) $st->execute([$k, (string) $v]);
+    pb_setting(null);
+}
+
+// ----------------------------------------------------------------------------
+// USERS, LOGIN, GEORANK SINGLE SIGN-ON
+// ----------------------------------------------------------------------------
+function pb_user_by_id($id) {
+    return pb_row('SELECT * FROM users WHERE id = ? AND active = 1', [(int) $id]);
+}
+function pb_count_users() {
+    return (int) pb_val('SELECT COUNT(*) FROM users');
+}
+function pb_georank_session_role() {
+    if (pb_setting('georank_sso') !== '1') return null;
+    if (empty($_SESSION['georank_auth'])) return null;
+    $r = $_SESSION['georank_role'] ?? '';
+    return in_array($r, ['admin', 'editor'], true) ? $r : null;
+}
+// One shared PostBase account per GeoRank role (GeoRank logins are
+// role-based, not per person). Created on first use; the display name can be
+// changed from My Account.
+function pb_georank_user($georankRole) {
+    $email = 'georank-' . $georankRole . '@georank.local';
+    $u = pb_row('SELECT * FROM users WHERE email = ?', [$email]);
+    $role = $georankRole === 'admin' ? 'admin' : pb_setting('georank_editor_role');
+    if (!in_array($role, PB_ROLES, true)) $role = 'editor';
+    if (!$u) {
+        pb_q('INSERT INTO users (email, name, role, source, created_at) VALUES (?, ?, ?, ?, ?)',
+            [$email, $georankRole === 'admin' ? 'Site Admin' : 'Site Editor', $role, 'georank', pb_now()]);
+        $u = pb_row('SELECT * FROM users WHERE email = ?', [$email]);
+    } elseif ($u['role'] !== $role) {
+        pb_q('UPDATE users SET role = ? WHERE id = ?', [$role, $u['id']]);
+        $u['role'] = $role;
+    }
+    return (int) $u['active'] === 1 ? $u : null;
+}
+function pb_current_user() {
+    static $resolved = false, $user = null;
+    if ($resolved) return $user;
+    $resolved = true;
+    if (session_status() !== PHP_SESSION_ACTIVE) return null;
+    if (!empty($_SESSION['pb_uid'])) {
+        $user = pb_user_by_id($_SESSION['pb_uid']);
+        if ($user) return $user;
+        unset($_SESSION['pb_uid']);
+    }
+    $gr = pb_georank_session_role();
+    if ($gr) $user = pb_georank_user($gr);
+    return $user;
+}
+function pb_login_throttled($ip) {
+    pb_q('DELETE FROM login_attempts WHERE attempted_at < ?', [time() - 900]);
+    return (int) pb_val('SELECT COUNT(*) FROM login_attempts WHERE ip = ?', [$ip]) >= 8;
+}
+function pb_attempt_login($email, $password) {
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '0';
+    if (pb_login_throttled($ip)) return 'Too many attempts. Wait 15 minutes and try again.';
+    $u = pb_row("SELECT * FROM users WHERE email = ? AND source = 'local'", [trim((string) $email)]);
+    if (!$u || !$u['password_hash'] || !password_verify((string) $password, $u['password_hash'])) {
+        pb_q('INSERT INTO login_attempts (ip, attempted_at) VALUES (?, ?)', [$ip, time()]);
+        return 'Wrong email or password.';
+    }
+    if ((int) $u['active'] !== 1) return 'This account has been deactivated.';
+    if (password_needs_rehash($u['password_hash'], PASSWORD_DEFAULT)) {
+        pb_q('UPDATE users SET password_hash = ? WHERE id = ?', [password_hash($password, PASSWORD_DEFAULT), $u['id']]);
+    }
+    session_regenerate_id(true);
+    $_SESSION['pb_uid'] = (int) $u['id'];
+    pb_q('UPDATE users SET last_login_at = ? WHERE id = ?', [pb_now(), $u['id']]);
+    pb_q('DELETE FROM login_attempts WHERE ip = ?', [$ip]);
+    return null;
+}
+function pb_role_label($role) {
+    return ['contributor' => 'Contributor', 'editor' => 'Editor', 'admin' => 'Admin'][$role] ?? $role;
+}
+
+// ----------------------------------------------------------------------------
+// PERMISSIONS — the whole publishing-control matrix lives here.
+//
+//   Contributor : writes own drafts, submits them for review, edits them
+//                 until approved. Never publishes.
+//   Editor      : everything a contributor can, plus edits any post,
+//                 approves/publishes/schedules, requests changes,
+//                 unpublishes, archives, manages categories.
+//   Admin       : everything an editor can, plus users, settings and
+//                 permanent deletion.
+// ----------------------------------------------------------------------------
+function pb_can($user, $perm, $post = null) {
+    if (!$user) return false;
+    $role = $user['role'];
+    $isEditor = $role === 'editor' || $role === 'admin';
+    $own = $post && isset($post['author_id']) && (int) $post['author_id'] === (int) $user['id'];
+    $status = $post['status'] ?? '';
+    switch ($perm) {
+        case 'post.create':
+        case 'media.upload':
+            return true;
+        case 'post.view':
+            return $isEditor || $own;
+        case 'post.edit':
+            return $isEditor || ($own && in_array($status, ['draft', 'pending', 'changes_requested'], true));
+        case 'post.submit':
+            return $own && in_array($status, ['draft', 'changes_requested'], true);
+        case 'post.withdraw':
+            return $own && $status === 'pending';
+        case 'post.publish':
+            return $isEditor && $status !== 'archived';
+        case 'post.request_changes':
+            return $isEditor && $status === 'pending';
+        case 'post.unpublish':
+            return $isEditor && $status === 'published';
+        case 'post.archive':
+            return $isEditor && $status !== 'archived';
+        case 'post.restore':
+            return $isEditor && $status === 'archived';
+        case 'post.delete':
+            return $role === 'admin' || ($own && $status === 'draft' && empty($post['first_published_at']));
+        case 'category.manage':
+            return $isEditor;
+        case 'user.manage':
+        case 'settings.manage':
+            return $role === 'admin';
+    }
+    return false;
+}
+
+// ----------------------------------------------------------------------------
+// POSTS
+// ----------------------------------------------------------------------------
+function pb_status_label($status, $publishedAt = null) {
+    if ($status === 'published' && $publishedAt && $publishedAt > pb_now()) return 'Scheduled';
+    return [
+        'draft' => 'Draft', 'pending' => 'Pending review', 'changes_requested' => 'Changes requested',
+        'published' => 'Published', 'archived' => 'Archived',
+    ][$status] ?? $status;
+}
+function pb_post_by_id($id) {
+    return pb_row('SELECT p.*, u.name AS author_name, c.name AS category_name, c.slug AS category_slug
+                   FROM posts p JOIN users u ON u.id = p.author_id LEFT JOIN categories c ON c.id = p.category_id
+                   WHERE p.id = ?', [(int) $id]);
+}
+function pb_post_by_slug($slug) {
+    return pb_row('SELECT p.*, u.name AS author_name, c.name AS category_name, c.slug AS category_slug
+                   FROM posts p JOIN users u ON u.id = p.author_id LEFT JOIN categories c ON c.id = p.category_id
+                   WHERE p.slug = ?', [(string) $slug]);
+}
+function pb_post_is_public($post) {
+    return $post && $post['status'] === 'published' && $post['published_at'] && $post['published_at'] <= pb_now();
+}
+function pb_unique_slug($base, $table = 'posts', $exceptId = 0) {
+    $base = pb_slugify($base) ?: ($table === 'posts' ? 'post' : 'category');
+    if (in_array($base, PB_RESERVED_SLUGS, true)) $base .= '-1';
+    $slug = $base;
+    $n = 2;
+    while ((int) pb_val("SELECT COUNT(*) FROM {$table} WHERE slug = ? AND id != ?", [$slug, (int) $exceptId]) > 0) {
+        $slug = $base . '-' . $n++;
+    }
+    return $slug;
+}
+function pb_log_event($postId, $userId, $action, $note = '') {
+    pb_q('INSERT INTO post_events (post_id, user_id, action, note, created_at) VALUES (?, ?, ?, ?, ?)',
+        [(int) $postId, $userId ? (int) $userId : null, $action, (string) $note, pb_now()]);
+}
+function pb_post_events($postId) {
+    return pb_all('SELECT e.*, u.name AS user_name FROM post_events e LEFT JOIN users u ON u.id = e.user_id
+                   WHERE e.post_id = ? ORDER BY e.id DESC LIMIT 50', [(int) $postId]);
+}
+
+// Create or update a post's content. Status changes go through
+// pb_post_transition() so every one of them is permission-checked and logged.
+// Returns [postId, error|null].
+function pb_post_save($user, $postId, array $in) {
+    $post = $postId ? pb_post_by_id($postId) : null;
+    if ($postId && !$post) return [0, 'Post not found.'];
+    if ($post && !pb_can($user, 'post.edit', $post)) return [$postId, 'You can\'t edit this post in its current state.'];
+    if (!$post && !pb_can($user, 'post.create')) return [0, 'You can\'t create posts.'];
+
+    $title = trim((string) ($in['title'] ?? ''));
+    if ($title === '') $title = 'Untitled post';
+    $title = function_exists('mb_substr') ? mb_substr($title, 0, 200) : substr($title, 0, 200);
+    $body = pb_sanitize_html($in['body'] ?? '');
+    $excerpt = trim(strip_tags((string) ($in['excerpt'] ?? '')));
+    $slugIn = trim((string) ($in['slug'] ?? ''));
+    $slug = pb_unique_slug($slugIn !== '' ? $slugIn : $title, 'posts', $post ? (int) $post['id'] : 0);
+    $catId = (int) ($in['category_id'] ?? 0);
+    if ($catId && !pb_val('SELECT id FROM categories WHERE id = ?', [$catId])) $catId = 0;
+    $cover = trim((string) ($in['cover_image'] ?? ''));
+    if ($cover !== '' && pb_safe_url($cover) === null) $cover = '';
+
+    $fields = [
+        'slug' => $slug, 'title' => $title, 'excerpt' => $excerpt, 'body' => $body,
+        'cover_image' => $cover, 'cover_alt' => trim((string) ($in['cover_alt'] ?? '')),
+        'category_id' => $catId ?: null,
+        'seo_title' => trim((string) ($in['seo_title'] ?? '')),
+        'seo_description' => trim((string) ($in['seo_description'] ?? '')),
+        'updated_at' => pb_now(),
+    ];
+    // Pages and pinning are site structure: Editors/Admins only. A contributor's
+    // save never changes them (new posts from contributors are always 'post').
+    if (pb_can($user, 'category.manage')) {
+        $type = ($in['type'] ?? ($post['type'] ?? 'post')) === 'page' ? 'page' : 'post';
+        $fields['type'] = $type;
+        $fields['pinned'] = $type === 'post' && !empty($in['pinned']) ? 1 : 0;
+        if ($type === 'page') $fields['category_id'] = null;
+    } elseif (!$post) {
+        $fields['type'] = 'post';
+    }
+    // Only editors decide when a post goes live.
+    if (pb_can($user, 'post.publish', $post ?: ['status' => 'draft']) && array_key_exists('published_at', $in) && $post && $post['status'] === 'published') {
+        $when = pb_local_to_utc($in['published_at']);
+        if ($when) $fields['published_at'] = $when;
+    }
+
+    if ($post) {
+        $sets = [];
+        foreach ($fields as $k => $v) $sets[] = "{$k} = :{$k}";
+        $fields['id'] = (int) $post['id'];
+        pb_q('UPDATE posts SET ' . implode(', ', $sets) . ' WHERE id = :id', $fields);
+        if ((int) $post['author_id'] !== (int) $user['id']) pb_log_event($post['id'], $user['id'], 'edited');
+        return [(int) $post['id'], null];
+    }
+    $fields['author_id'] = (int) $user['id'];
+    $fields['status'] = 'draft';
+    $fields['created_at'] = pb_now();
+    $cols = array_keys($fields);
+    pb_q('INSERT INTO posts (' . implode(', ', $cols) . ') VALUES (:' . implode(', :', $cols) . ')', $fields);
+    $id = (int) pb_db()->lastInsertId();
+    pb_log_event($id, $user['id'], $fields['type'] === 'page' ? 'created page' : 'created');
+    return [$id, null];
+}
+
+// Workflow transitions. Returns null on success or an error string.
+function pb_post_transition($user, $post, $action, $note = '', $publishAtLocal = '') {
+    $note = trim((string) $note);
+    $now = pb_now();
+    switch ($action) {
+        case 'submit':
+            if (!pb_can($user, 'post.submit', $post)) return 'This post can\'t be submitted right now.';
+            pb_q("UPDATE posts SET status = 'pending', submitted_at = ? WHERE id = ?", [$now, $post['id']]);
+            break;
+        case 'withdraw':
+            if (!pb_can($user, 'post.withdraw', $post)) return 'This post isn\'t waiting for review.';
+            pb_q("UPDATE posts SET status = 'draft' WHERE id = ?", [$post['id']]);
+            break;
+        case 'publish':
+            if (!pb_can($user, 'post.publish', $post)) return 'Only an Editor or Admin can publish.';
+            $when = pb_local_to_utc($publishAtLocal) ?: ($post['status'] === 'published' && $post['published_at'] ? $post['published_at'] : $now);
+            pb_q("UPDATE posts SET status = 'published', published_at = ?, first_published_at = COALESCE(first_published_at, ?),
+                  reviewed_by = ? WHERE id = ?", [$when, $when, $user['id'], $post['id']]);
+            $action = $when > $now ? 'scheduled' : ($post['status'] === 'pending' ? 'approved' : 'published');
+            break;
+        case 'request_changes':
+            if (!pb_can($user, 'post.request_changes', $post)) return 'Only a post waiting for review can be sent back.';
+            if ($note === '') return 'Add a note so the writer knows what to change.';
+            pb_q("UPDATE posts SET status = 'changes_requested', reviewed_by = ? WHERE id = ?", [$user['id'], $post['id']]);
+            break;
+        case 'unpublish':
+            if (!pb_can($user, 'post.unpublish', $post)) return 'This post isn\'t published.';
+            pb_q("UPDATE posts SET status = 'draft' WHERE id = ?", [$post['id']]);
+            break;
+        case 'archive':
+            if (!pb_can($user, 'post.archive', $post)) return 'You can\'t archive this post.';
+            pb_q("UPDATE posts SET status = 'archived' WHERE id = ?", [$post['id']]);
+            break;
+        case 'restore':
+            if (!pb_can($user, 'post.restore', $post)) return 'This post isn\'t archived.';
+            pb_q("UPDATE posts SET status = 'draft' WHERE id = ?", [$post['id']]);
+            break;
+        case 'delete':
+            if (!pb_can($user, 'post.delete', $post)) return 'You can\'t delete this post.';
+            pb_q('DELETE FROM posts WHERE id = ?', [$post['id']]);
+            return null;
+        default:
+            return 'Unknown action.';
+    }
+    pb_log_event($post['id'], $user['id'], $action, $note);
+    return null;
+}
+
+// ----------------------------------------------------------------------------
+// HTML SANITIZER — every body is cleaned on save, so a contributor can never
+// store script, event handlers, styles or unknown embeds.
+// ----------------------------------------------------------------------------
+function pb_safe_url($url) {
+    $url = trim((string) $url);
+    if ($url === '') return null;
+    $probe = preg_replace('/[\x00-\x20\x7f]+/', '', $url);
+    if (preg_match('~^([a-z][a-z0-9+.\-]*):~i', $probe, $m)
+        && !in_array(strtolower($m[1]), ['http', 'https', 'mailto', 'tel'], true)) {
+        return null;
+    }
+    return $url;
+}
+function pb_embed_allowed($src) {
+    return (bool) preg_match('~^https://(www\.)?(youtube\.com|youtube-nocookie\.com)/embed/[\w\-]+~i', $src)
+        || (bool) preg_match('~^https://player\.vimeo\.com/video/\d+~i', $src)
+        || (bool) preg_match('~^https://www\.google\.com/maps/embed\?~i', $src);
+}
+function pb_sanitize_html($html) {
+    $html = trim((string) $html);
+    if ($html === '') return '';
+    if (!class_exists('DOMDocument')) {
+        return '<p>' . nl2br(pb_e(strip_tags($html))) . '</p>';
+    }
+    $useMb = function_exists('mb_encode_numericentity');
+    $map = [0x80, 0x10FFFF, 0, 0x1FFFFF];
+    if ($useMb) $html = mb_encode_numericentity($html, $map, 'UTF-8');
+
+    $doc = new DOMDocument('1.0', 'UTF-8');
+    $prev = libxml_use_internal_errors(true);
+    $doc->loadHTML('<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head><body><div id="pb-root">'
+        . $html . '</div></body></html>');
+    libxml_clear_errors();
+    libxml_use_internal_errors($prev);
+    $root = (new DOMXPath($doc))->query('//div[@id="pb-root"]')->item(0);
+    if (!$root) return '';
+    pb_sanitize_children($doc, $root);
+
+    $out = '';
+    foreach ($root->childNodes as $child) $out .= $doc->saveHTML($child);
+    if ($useMb) $out = mb_decode_numericentity($out, $map, 'UTF-8');
+    $out = preg_replace('~<p>(\s|&nbsp;|<br>)*</p>~i', '', $out); // empty paragraphs from the editor
+    return trim($out);
+}
+function pb_sanitize_children(DOMDocument $doc, DOMNode $node) {
+    static $allowed = [
+        'p' => [], 'br' => [], 'h2' => ['id'], 'h3' => ['id'], 'h4' => ['id'],
+        'strong' => [], 'b' => [], 'em' => [], 'i' => [], 'u' => [], 's' => [], 'sub' => [], 'sup' => [], 'mark' => [],
+        'a' => ['href', 'title', 'target', 'rel'],
+        'ul' => [], 'ol' => [], 'li' => [], 'blockquote' => [], 'pre' => [], 'code' => [], 'hr' => [],
+        'img' => ['src', 'alt', 'width', 'height', 'title', 'loading'],
+        'figure' => ['class'], 'figcaption' => [],
+        'table' => [], 'thead' => [], 'tbody' => [], 'tr' => [], 'th' => ['colspan', 'rowspan'], 'td' => ['colspan', 'rowspan'],
+        'iframe' => ['src', 'width', 'height', 'title', 'allowfullscreen', 'loading'],
+    ];
+    static $drop = ['script', 'style', 'object', 'embed', 'form', 'input', 'button', 'textarea', 'select', 'option',
+        'svg', 'math', 'template', 'noscript', 'meta', 'link', 'base', 'head', 'title', 'applet', 'frame', 'frameset',
+        'audio', 'video', 'canvas', 'dialog'];
+    static $rename = ['h1' => 'h2', 'h5' => 'h4', 'h6' => 'h4'];
+    static $blocks = ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'table', 'blockquote', 'pre', 'figure', 'section', 'article'];
+
+    $children = [];
+    foreach ($node->childNodes as $c) $children[] = $c;
+    foreach ($children as $child) {
+        if ($child instanceof DOMText) continue; // includes CDATA
+        if (!($child instanceof DOMElement)) { $node->removeChild($child); continue; } // comments, PIs
+        $tag = strtolower($child->nodeName);
+        if (in_array($tag, $drop, true)) { $node->removeChild($child); continue; }
+
+        if ($tag === 'div' || $tag === 'section' || $tag === 'article') {
+            $hasBlock = false;
+            foreach ($child->childNodes as $gc) {
+                if ($gc instanceof DOMElement && in_array(strtolower($gc->nodeName), $blocks, true)) { $hasBlock = true; break; }
+            }
+            if ($hasBlock) { // unwrap: keep the inner blocks, lose the wrapper
+                pb_sanitize_children($doc, $child);
+                while ($child->firstChild) $node->insertBefore($child->firstChild, $child);
+                $node->removeChild($child);
+                continue;
+            }
+            $tag = 'p';
+            $child = pb_rename_element($doc, $child, 'p');
+        } elseif (isset($rename[$tag])) {
+            $child = pb_rename_element($doc, $child, $rename[$tag]);
+            $tag = $rename[$tag];
+        }
+        if (!isset($allowed[$tag])) { // span, font, etc.: unwrap
+            pb_sanitize_children($doc, $child);
+            while ($child->firstChild) $node->insertBefore($child->firstChild, $child);
+            $node->removeChild($child);
+            continue;
+        }
+
+        $names = [];
+        foreach ($child->attributes as $a) $names[] = $a->nodeName;
+        foreach ($names as $name) {
+            if (!in_array(strtolower($name), $allowed[$tag], true)) $child->removeAttribute($name);
+        }
+        if ($tag === 'a') {
+            if ($child->hasAttribute('href') && pb_safe_url($child->getAttribute('href')) === null) $child->removeAttribute('href');
+            if ($child->getAttribute('target') === '_blank') {
+                $child->setAttribute('rel', 'noopener noreferrer');
+            } else {
+                $child->removeAttribute('target');
+                if ($child->hasAttribute('rel') && !preg_match('/^[a-z ]+$/i', $child->getAttribute('rel'))) $child->removeAttribute('rel');
+            }
+        } elseif ($tag === 'img') {
+            $src = $child->getAttribute('src');
+            if (pb_safe_url($src) === null || stripos($src, 'mailto:') === 0 || stripos($src, 'tel:') === 0) {
+                $node->removeChild($child);
+                continue;
+            }
+            $child->setAttribute('loading', 'lazy');
+            foreach (['width', 'height'] as $dim) {
+                if ($child->hasAttribute($dim) && !ctype_digit($child->getAttribute($dim))) $child->removeAttribute($dim);
+            }
+        } elseif ($tag === 'figure') {
+            // Only PostBase's own layout classes survive (image wrap/size, video embed).
+            $keep = array_filter(preg_split('/\s+/', $child->getAttribute('class')), function ($c) {
+                return (bool) preg_match('/^pb-(figure|embed|align-(left|right|center)|w-(s|m|l|full))$/', $c);
+            });
+            if ($keep) $child->setAttribute('class', implode(' ', array_unique($keep)));
+            else $child->removeAttribute('class');
+        } elseif ($tag === 'iframe') {
+            if (!pb_embed_allowed($child->getAttribute('src'))) { $node->removeChild($child); continue; }
+            $child->setAttribute('loading', 'lazy');
+            $child->setAttribute('allowfullscreen', '');
+            // YouTube refuses to play (Error 153) when the embed sends no referrer.
+            $child->setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+            $child->setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share');
+            if (!$child->hasAttribute('title')) $child->setAttribute('title', 'Embedded video');
+        } elseif (in_array($tag, ['h2', 'h3', 'h4'], true) && $child->hasAttribute('id')) {
+            $child->setAttribute('id', pb_slugify($child->getAttribute('id'), 60));
+        }
+        pb_sanitize_children($doc, $child);
+    }
+}
+function pb_rename_element(DOMDocument $doc, DOMElement $el, $newTag) {
+    $new = $doc->createElement($newTag);
+    foreach ($el->attributes as $a) $new->setAttribute($a->nodeName, $a->nodeValue);
+    while ($el->firstChild) $new->appendChild($el->firstChild);
+    $el->parentNode->replaceChild($new, $el);
+    return $new;
+}
+
+// ----------------------------------------------------------------------------
+// UPLOADS — images only, re-validated from the file bytes, never trusted by
+// extension. uploads/.htaccess also stops any script from running there.
+// ----------------------------------------------------------------------------
+function pb_handle_upload($file) {
+    if (!is_array($file) || !isset($file['error'])) return ['error' => 'No file received.'];
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        return ['error' => $file['error'] === UPLOAD_ERR_INI_SIZE || $file['error'] === UPLOAD_ERR_FORM_SIZE
+            ? 'That file is larger than the server allows.' : 'Upload failed (code ' . (int) $file['error'] . ').'];
+    }
+    $maxBytes = (int) (pb_config('max_upload_mb') * 1024 * 1024);
+    if ($file['size'] > $maxBytes) return ['error' => 'Images must be ' . pb_config('max_upload_mb') . ' MB or smaller.'];
+    return pb_store_image($file['tmp_name'], (string) $file['name'], true);
+}
+
+// Validates an image file on disk (by its bytes, never its name), resizes it if
+// needed and moves it into uploads/YYYY/MM/. Shared by uploads and imports.
+function pb_store_image($tmpPath, $origName, $isUpload) {
+    $info = @getimagesize($tmpPath);
+    $types = [IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png', IMAGETYPE_GIF => 'gif'];
+    if (defined('IMAGETYPE_WEBP')) $types[IMAGETYPE_WEBP] = 'webp';
+    if (!$info || !isset($types[$info[2]])) return ['error' => 'Only JPG, PNG, GIF and WebP images can be uploaded.'];
+    $ext = $types[$info[2]];
+
+    $sub = gmdate('Y') . '/' . gmdate('m');
+    $dir = PB_UPLOAD_DIR . '/' . $sub;
+    if (!is_dir($dir) && !@mkdir($dir, 0755, true)) return ['error' => 'Could not create the uploads folder.'];
+    $base = pb_slugify(pathinfo($origName, PATHINFO_FILENAME), 40) ?: 'image';
+    $name = $base . '-' . bin2hex(random_bytes(3)) . '.' . $ext;
+    $dest = $dir . '/' . $name;
+
+    [$w, $h] = [$info[0], $info[1]];
+    $max = (int) pb_config('max_image_px');
+    $resized = false;
+    if ($w > $max && $ext !== 'gif' && function_exists('imagecreatetruecolor')) {
+        $loaders = ['jpg' => 'imagecreatefromjpeg', 'png' => 'imagecreatefrompng', 'webp' => 'imagecreatefromwebp'];
+        $savers  = ['jpg' => 'imagejpeg', 'png' => 'imagepng', 'webp' => 'imagewebp'];
+        if (function_exists($loaders[$ext]) && function_exists($savers[$ext])) {
+            $src = @$loaders[$ext]($tmpPath);
+            if ($src) {
+                $nh = (int) round($h * $max / $w);
+                $dst = imagecreatetruecolor($max, $nh);
+                if ($ext !== 'jpg') { imagealphablending($dst, false); imagesavealpha($dst, true); }
+                imagecopyresampled($dst, $src, 0, 0, 0, 0, $max, $nh, $w, $h);
+                $ok = $ext === 'jpg' ? imagejpeg($dst, $dest, 85) : ($ext === 'png' ? imagepng($dst, $dest, 7) : imagewebp($dst, $dest, 82));
+                imagedestroy($src);
+                imagedestroy($dst);
+                if ($ok) { $resized = true; [$w, $h] = [$max, $nh]; }
+            }
+        }
+    }
+    if (!$resized) {
+        $moved = $isUpload ? move_uploaded_file($tmpPath, $dest) : @rename($tmpPath, $dest);
+        if (!$moved) return ['error' => 'Could not save the image.'];
+    } elseif (!$isUpload) {
+        @unlink($tmpPath);
+    }
+    @chmod($dest, 0644);
+    return ['url' => PB_BASE_PATH . '/uploads/' . $sub . '/' . $name, 'width' => $w, 'height' => $h];
+}
+
+// Copies an image the writer pasted (from Google Docs, WordPress, a web page…)
+// into this blog's uploads, so the post never depends on — or breaks with —
+// someone else's server. Guarded against SSRF: http(s) only, public IPs only
+// (checked at every redirect hop, with the connection pinned to the checked
+// IP), size-capped while downloading, and the bytes must be a real image.
+function pb_import_remote_image($url) {
+    if (!function_exists('curl_init')) return ['error' => 'This server can\'t fetch images (cURL is off). Upload the image instead.'];
+    $maxBytes = (int) (pb_config('max_upload_mb') * 1024 * 1024);
+    $url = trim((string) $url);
+    if (strpos($url, '//') === 0) $url = 'https:' . $url;
+    for ($hop = 0; $hop < 4; $hop++) {
+        $parts = parse_url($url);
+        $scheme = strtolower($parts['scheme'] ?? '');
+        $host = $parts['host'] ?? '';
+        if (!in_array($scheme, ['http', 'https'], true) || $host === '') return ['error' => 'Only http(s) image links can be imported.'];
+        $port = (int) ($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
+        $ips = filter_var($host, FILTER_VALIDATE_IP) ? [$host] : (@gethostbynamel($host) ?: []);
+        if (!$ips) return ['error' => 'Couldn\'t find the server for ' . $host . '.'];
+        foreach ($ips as $ip) {
+            if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                return ['error' => 'That image address points to a private network and was blocked.'];
+            }
+        }
+        $body = '';
+        $tooBig = false;
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RESOLVE => [$host . ':' . $port . ':' . $ips[0]],
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_TIMEOUT => 20,
+            CURLOPT_CONNECTTIMEOUT => 8,
+            CURLOPT_USERAGENT => 'UnnatiPostBase/' . PB_VERSION . ' (+' . PB_HOMEPAGE . ')',
+            CURLOPT_HTTPHEADER => ['Accept: image/webp,image/png,image/jpeg,image/gif;q=0.9,*/*;q=0.1'], // no AVIF: GD can't store it
+            CURLOPT_WRITEFUNCTION => function ($c, $chunk) use (&$body, &$tooBig, $maxBytes) {
+                $body .= $chunk;
+                if (strlen($body) > $maxBytes) { $tooBig = true; return 0; }
+                return strlen($chunk);
+            },
+        ]);
+        if (defined('CURLOPT_PROTOCOLS')) curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+        curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $location = (string) curl_getinfo($ch, CURLINFO_REDIRECT_URL);
+        $err = curl_error($ch);
+        curl_close($ch);
+        if ($tooBig) return ['error' => 'That image is larger than ' . pb_config('max_upload_mb') . ' MB.'];
+        if ($code >= 300 && $code < 400 && $location !== '') { $url = $location; continue; }
+        if ($code !== 200 || $body === '') return ['error' => 'Couldn\'t download the image' . ($err ? ' (' . $err . ')' : ' (HTTP ' . $code . ')') . '.'];
+        $tmp = tempnam(sys_get_temp_dir(), 'pbimg');
+        file_put_contents($tmp, $body);
+        $name = basename((string) ($parts['path'] ?? 'image')) ?: 'image';
+        $r = pb_store_image($tmp, $name, false);
+        if (is_file($tmp)) @unlink($tmp);
+        return $r;
+    }
+    return ['error' => 'Too many redirects.'];
+}
+
+// ----------------------------------------------------------------------------
+// URLS — pretty (/blog/my-post/) when mod_rewrite is available, query-string
+// fallback (/blog/?p=my-post) otherwise. Toggle in Settings.
+// ----------------------------------------------------------------------------
+function pb_url($type = 'home', $arg = null, $page = 1) {
+    $pretty = pb_setting('pretty_urls') === '1';
+    $b = PB_BASE_PATH . '/';
+    switch ($type) {
+        case 'post':
+            return $pretty ? $b . rawurlencode($arg) . '/' : $b . '?p=' . rawurlencode($arg);
+        case 'category':
+            $u = $pretty ? $b . 'category/' . rawurlencode($arg) . '/' : $b . '?c=' . rawurlencode($arg);
+            if ($page > 1) $u .= $pretty ? 'page/' . (int) $page . '/' : '&page=' . (int) $page;
+            return $u;
+        case 'feed':
+            return $pretty ? $b . 'feed.xml' : $b . '?feed=rss';
+        case 'sitemap':
+            return $pretty ? $b . 'sitemap.xml' : $b . '?feed=sitemap';
+        case 'admin':
+            return $b . 'admin/' . ($arg ? '?' . $arg : '');
+        default:
+            if ($page > 1) return $pretty ? $b . 'page/' . (int) $page . '/' : $b . '?page=' . (int) $page;
+            return $b;
+    }
+}
+function pb_abs_url($path) {
+    if (preg_match('~^https?://~i', $path)) return $path;
+    return pb_origin() . ($path !== '' && $path[0] === '/' ? '' : '/') . $path;
+}
+
+// ----------------------------------------------------------------------------
+// GEORANK INTEGRATION
+// ----------------------------------------------------------------------------
+function pb_is_georank_site() {
+    return is_file(PB_SITE_DIR . '/header.html') && is_file(PB_SITE_DIR . '/footer.html');
+}
+function pb_layout_mode() {
+    $m = pb_setting('layout');
+    if ($m === 'georank' && pb_is_georank_site()) return 'georank';
+    if ($m === 'standalone') return 'standalone';
+    return pb_is_georank_site() ? 'georank' : 'standalone';
+}
+// Adds "Sitemap: <blog sitemap>" to the site's robots.txt, outside GeoRank's
+// managed marker block so a GeoRank robots regeneration never removes it.
+function pb_robots_add_sitemap() {
+    $path = PB_SITE_DIR . '/robots.txt';
+    $line = 'Sitemap: ' . pb_abs_url(pb_url('sitemap'));
+    $raw = is_file($path) ? (string) file_get_contents($path) : "User-agent: *\nAllow: /\n";
+    if (strpos($raw, $line) !== false) return 'robots.txt already lists the blog sitemap.';
+    $raw = rtrim($raw) . "\n\n# PostBase blog\n" . $line . "\n";
+    return @file_put_contents($path, $raw) === false ? null : 'Added the blog sitemap to robots.txt.';
+}
