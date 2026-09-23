@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.1 — 2026-09-24
+
+- **Security hardening:** PostBase now recreates its protective `.htaccess` files (`data/`, `uploads/`, `lib/`) whenever they're missing. Dot-files are often silently skipped by FTP clients, zip tools and GitHub's web uploader, which could leave the SQLite database folder unprotected on a fresh install.
+
 ## 0.12.0 — 2026-09-24
 
 **Write anywhere, paste without pain.**
