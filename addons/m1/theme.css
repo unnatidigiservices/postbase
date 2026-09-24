@@ -1,0 +1,86 @@
+/*! PostBase M1 ("Mobile One") theme · https://postbase.top
+ * SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-PostBase-Commercial
+ * 720px column · 640px content · header of three 100px blocks (logo · action · menu). */
+
+.pb-m1 {
+  --pb-accent: var(--m1-accent);
+  --pb-bg: var(--m1-container-bg);
+  --pb-text: var(--m1-container-fg);
+  --pb-max: 640px;
+  margin: 0;
+  background: var(--m1-page-bg);
+  color: var(--m1-container-fg);
+  font: 17px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+.pb-m1 *, .pb-m1 *::before, .pb-m1 *::after { box-sizing: border-box; }
+.pb-m1 a { color: var(--pb-accent); }
+
+/* The 720px column: header, container, footer */
+.m1-shell { max-width: 720px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; background: var(--m1-container-bg); }
+@media (min-width: 740px) {
+  .m1-shell { box-shadow: 0 0 0 1px rgba(15, 27, 61, .05), 0 12px 48px rgba(15, 27, 61, .10); }
+}
+
+/* Header: three permanent 100px blocks */
+.m1-header { position: sticky; top: 0; z-index: 30; background: var(--m1-header-bg); color: var(--m1-header-fg); }
+.m1-header-inner { display: flex; align-items: center; justify-content: space-between; min-height: 100px; padding: 0 12px; }
+.m1-block { flex: 0 0 100px; width: 100px; height: 100px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.m1-logo { color: inherit !important; text-decoration: none; }
+.m1-logo img { display: block; max-width: 100px; max-height: 100px; width: auto; height: auto; object-fit: contain; }
+.m1-logo-text { font-weight: 800; font-size: 17px; line-height: 1.15; text-align: center; word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.m1-action { text-align: center; font-size: 14px; font-weight: 600; line-height: 1.25; }
+.m1-btn { display: inline-flex; align-items: center; justify-content: center; max-width: 100px; min-height: 40px; padding: 8px 12px;
+  border-radius: 999px; background: var(--m1-header-fg); color: var(--m1-header-bg) !important; text-decoration: none; font-weight: 700; font-size: 14px; line-height: 1.15; }
+.m1-link { color: inherit !important; text-decoration: underline; text-underline-offset: 3px; }
+.m1-text { color: inherit; }
+.m1-burger { background: none; border: 0; padding: 0; color: inherit; cursor: pointer; font: inherit; }
+.m1-burger-icon { width: 48px; height: 48px; border-radius: 14px; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 0 12px;
+  background: color-mix(in srgb, currentColor 14%, transparent); }
+.m1-burger-icon i { display: block; height: 2.5px; border-radius: 2px; background: currentColor; transition: transform .2s ease, opacity .2s ease; }
+.m1-burger[aria-expanded="true"] .m1-burger-icon i:nth-child(1) { transform: translateY(8.5px) rotate(45deg); }
+.m1-burger[aria-expanded="true"] .m1-burger-icon i:nth-child(2) { opacity: 0; }
+.m1-burger[aria-expanded="true"] .m1-burger-icon i:nth-child(3) { transform: translateY(-8.5px) rotate(-45deg); }
+.m1-burger:focus-visible .m1-burger-icon, .m1-logo:focus-visible, .m1-btn:focus-visible { outline: 3px solid currentColor; outline-offset: 2px; }
+@media (max-width: 339px) { /* very small phones: blocks shrink a little instead of overflowing */
+  .m1-header-inner { padding: 0 6px; }
+  .m1-block { flex-basis: 92px; width: 92px; }
+}
+
+/* Menu panel (opened by the hamburger) */
+.m1-menu { background: var(--m1-header-bg); color: var(--m1-header-fg); padding: 4px 16px 18px; border-top: 1px solid color-mix(in srgb, currentColor 20%, transparent); }
+.m1-menu[hidden] { display: none; }
+.m1-menu-links { display: flex; flex-direction: column; }
+.m1-menu-links a { color: inherit !important; text-decoration: none; font-size: 18px; font-weight: 600; padding: 14px 4px; border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent); }
+.m1-menu-links a[aria-current="page"] { text-decoration: underline; text-underline-offset: 5px; }
+.m1-search { display: flex; gap: 8px; margin-top: 14px; }
+.m1-search input { flex: 1; min-width: 0; padding: 11px 14px; border-radius: 12px; border: 0; font: inherit; font-size: 16px; }
+.m1-search button { padding: 11px 16px; border-radius: 12px; border: 0; font: inherit; font-weight: 700; background: var(--m1-header-fg); color: var(--m1-header-bg); cursor: pointer; }
+
+/* Content: 640px centred (672px box − 2×16px padding; phones keep the 16px gutters) */
+.m1-main { flex: 1; width: 100%; max-width: 672px; margin: 0 auto; padding: 28px 16px 48px; }
+.pb-m1 .pb-wrap, .pb-m1 .pb-article-wrap { max-width: none; padding: 0; }
+.pb-m1 .pb-grid { grid-template-columns: 1fr; gap: 20px; }
+.pb-m1 .pb-featured { grid-template-columns: 1fr; }
+.pb-m1 .pb-list-head h1, .pb-m1 .pb-article-head h1 { font-size: 1.9em; line-height: 1.2; }
+.pb-m1 .pb-search { max-width: none; }
+/* In a 640px column a wrapped image takes at most half the width, so the text beside it stays readable */
+@media (min-width: 768px) {
+  .pb-m1 .pb-content .pb-align-left, .pb-m1 .pb-content .pb-align-right { max-width: 50%; }
+  .pb-m1 .pb-content .pb-align-left.pb-w-l, .pb-m1 .pb-content .pb-align-right.pb-w-l,
+  .pb-m1 .pb-content .pb-align-left.pb-w-full, .pb-m1 .pb-content .pb-align-right.pb-w-full { width: 50%; }
+}
+
+/* Footer: 720px (the column) */
+.m1-footer { background: var(--m1-footer-bg); color: var(--m1-footer-fg); }
+.m1-footer-inner { max-width: 720px; margin: 0 auto; padding: 28px 16px 34px; text-align: center; font-size: 14px; }
+.m1-footer a { color: inherit !important; }
+.m1-footer-nav { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; margin-bottom: 12px; font-weight: 600; }
+.m1-footer-nav a { text-decoration: none; }
+.m1-footer p { margin: 4px 0; opacity: .88; }
+.m1-powered { font-size: 12.5px; opacity: .7 !important; }
+
+.m1-skip { position: absolute; left: -9999px; }
+.m1-skip:focus { left: 8px; top: 8px; z-index: 60; background: #fff; color: #000; padding: 8px 12px; border-radius: 8px; }
+.m1-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

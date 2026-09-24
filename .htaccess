@@ -10,6 +10,8 @@ DirectoryIndex index.php
 
   # Never serve internals or docs directly.
   RewriteRule ^(data|lib|tools|docs|dist)(/|$) - [F,L]
+  # Addon code and manifests are never served directly (their CSS/JS/images are).
+  RewriteRule ^addons/.+\.(php|json|md)$ - [F,L]
   RewriteRule ^(config(\.sample)?\.php|[^/]+\.md|\.git.*)$ - [F,L]
 
   # Everything that isn't a real file or folder goes to the front controller.

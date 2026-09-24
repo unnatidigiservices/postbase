@@ -83,6 +83,7 @@ function pb_nav_html($class) {
  *        jsonld (array|null), noindex (bool), head (extra raw HTML).
  */
 function pb_render_page(array $meta, $content) {
+    $meta = pb_apply_filters('pb_page_meta', $meta);
     $title = $meta['title'] ?? pb_setting('blog_title');
     $desc = $meta['description'] ?? '';
     $canonical = $meta['canonical'] ?? '';
@@ -118,6 +119,8 @@ function pb_render_page(array $meta, $content) {
     if ($designCss !== '') $tail .= '<style>/* PostBase design settings · https://postbase.top */' . $designCss . '</style>' . "\n";
     $tail .= '<meta name="generator" content="Unnati PostBase (' . PB_HOMEPAGE . ')">' . "\n";
     $tail .= $meta['head'] ?? '';
+    $tail .= pb_capture_action('pb_head', $meta);       // plugins: extra <head> tags
+    $bodyEnd = pb_capture_action('pb_body_end', $meta); // plugins: scripts before </body>
 
     header('Content-Type: text/html; charset=utf-8');
     if (pb_layout_mode() === 'georank') {
@@ -132,8 +135,36 @@ function pb_render_page(array $meta, $content) {
         $subnav = pb_setting('nav_show_georank') === '1' ? '<div class="pb-subnav-bar"><div class="pb-wrap">' . pb_nav_html('pb-subnav') . "</div></div>\n" : '';
         echo "\n<main id=\"main\" class=\"pb-main\">\n" . $subnav . $content . "\n</main>\n";
         include PB_SITE_DIR . '/footer.html';
-        echo "\n" . $assets['foot'] . "</body>\n</html>\n";
+        echo "\n" . $assets['foot'] . $bodyEnd . "</body>\n</html>\n";
         return;
+    }
+
+    // Active theme addon (Settings → Addons). Any failure falls back to the built-in layout below.
+    $theme = pb_active_theme();
+    if ($theme) {
+        $themeHead = $head . '<link rel="stylesheet" href="' . pb_e($blogCss) . '">' . "\n";
+        foreach (['theme.css'] as $f) {
+            if (is_file($theme['dir'] . '/' . $f)) {
+                $themeHead .= '<link rel="stylesheet" href="' . pb_e($theme['url'] . '/' . $f . '?v=' . $theme['version']) . '">' . "\n";
+            }
+        }
+        $page = [
+            'lang' => $lang,
+            'head' => $themeHead . $tail,           // everything that belongs inside <head>
+            'body_end' => $bodyEnd,                  // print just before </body>
+            'content' => $content,                   // the list/post/page HTML
+            'nav' => pb_nav_items(),                 // [['label','url','new_tab'], ...]
+            'blog_title' => (string) pb_setting('blog_title'),
+            'blog_url' => pb_url(),
+            'site_url' => pb_site_base_path() . '/',
+            'feed_url' => pb_url('feed'),
+            'favicon' => $favicon,
+            'theme_url' => $theme['url'],
+            'settings' => pb_addon_settings($theme['slug']),
+            'year' => date('Y'),
+            'powered_by' => 'Powered by <a href="' . PB_HOMEPAGE . '" rel="noopener">Unnati PostBase</a>',
+        ];
+        if (pb_render_with_theme($theme, $page)) return;
     }
 
     echo "<!DOCTYPE html>\n<html lang=\"" . pb_e($lang) . "\">\n<head>\n" . $head
@@ -147,7 +178,7 @@ function pb_render_page(array $meta, $content) {
        . '<main id="main" class="pb-main">' . "\n" . $content . "\n</main>\n"
        . '<footer class="pb-footer"><div class="pb-wrap">&copy; ' . date('Y') . ' ' . pb_e(pb_setting('blog_title'))
        . ' &middot; Powered by <a href="' . PB_HOMEPAGE . '" rel="noopener">Unnati PostBase</a></div></footer>' . "\n"
-       . "</body>\n</html>\n";
+       . $bodyEnd . "</body>\n</html>\n";
 }
 
 // One post card for listing pages.
@@ -169,7 +200,7 @@ function pb_card_html($p) {
         . '<p class="pb-meta"><time datetime="' . pb_e(str_replace(' ', 'T', $p['published_at']) . 'Z') . '">'
         . pb_e(pb_format_date($p['published_at'])) . '</time> &middot; ' . pb_reading_minutes($p['body']) . ' min read</p>'
         . '</div></article>';
-    return $h;
+    return pb_apply_filters('pb_card_html', $h, $p);
 }
 
 // Pinned post: a wide card at the top of the blog home.

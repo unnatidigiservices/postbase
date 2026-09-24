@@ -5,6 +5,13 @@ PostBase is dual-licensed. You may use it under **either**:
 1. the **GNU Affero General Public License v3.0 or later** (see `LICENSE`), free of charge, **or**
 2. a **Commercial License** from Unnati Digi Services, described here.
 
+## Included free with Unnati platforms
+
+- **[GeoRank](https://georank.co.in) sites:** one-click install from Control Center → Upgrade.
+- **[Unnati LiteCommerce](https://litecommerce.co.in) sites:** available as a free add-on, styled to match your brand.
+
+You don't need to buy anything to use PostBase on those sites.
+
 ## Do I need a commercial license?
 
 **You do *not* need one** to run unmodified PostBase on your own website or your company's website, including a commercial business website. The AGPL allows that.
@@ -18,21 +25,21 @@ PostBase is dual-licensed. You may use it under **either**:
 | White-label it (remove PostBase branding or attribution) | Keep legal notices intact | Rebrand it as your own |
 | Bundle it inside a proprietary product or theme you sell | License the combined work under AGPL | Ship it under your own terms |
 
-## Editions (indicative)
+## Licenses and pricing
 
-| Edition | For | Includes |
+| License | Price | For |
 |---|---|---|
-| **Site** | One production domain | Commercial rights for one site, updates for 1 year |
-| **Agency** | Unlimited client sites you build or manage | Commercial and white-label rights, updates and email support for 1 year |
-| **OEM / SaaS** | Platforms and products embedding PostBase | Redistribution and hosted-service rights, priority support, custom terms |
+| **Single site** | **$17 / year** | One production domain. Commercial rights and updates while active. |
+| **Single site, permanent** | **$97 one-time** | One production domain for life, **plus a custom design and integration with your CMS**. |
+| **White-label SaaS provider** | **$197 / year** | Platforms offering PostBase to their customers under their own brand. |
+| **Hosting company** | **$297 / year** | Hosts offering PostBase as a one-click app or managed blog to hosting customers. |
+| **Permanent Sponsor** | **$497 one-time** | Support PostBase's development. You get **a dedicated thank-you post on the official PostBase blog** explaining your product or service, and **a permanent mention on the official Sponsors page** at postbase.top, alongside other sponsors. |
 
-Pricing and terms are provided on request.
+Prices are in USD, excluding applicable taxes. Ask about agency or volume needs.
 
 ## How to get one
 
-Contact us through **[postbase.top](https://postbase.top)** (or [unnatidigiservices.in](https://unnatidigiservices.in)) and mention "PostBase commercial license", your domain(s) or product, and the edition you need. You'll receive a signed license agreement. That agreement, not this summary, governs your rights.
-
-**GeoRank clients:** PostBase is already included with your GeoRank site under Unnati's own license. You don't need to buy anything to use the blog on that site.
+Contact us through **[postbase.top](https://postbase.top)** (or [unnatidigiservices.in](https://unnatidigiservices.in)) and mention the license you want and your domain(s) or product. You'll receive a signed license agreement. That agreement, not this summary, governs your rights.
 
 ---
 

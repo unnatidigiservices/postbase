@@ -1,0 +1,34 @@
+name: 💡 Feature request
+description: Suggest an idea that would make PostBase better.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        PostBase stays small on purpose: drop-in PHP, no build step, fast on phones. Ideas that keep it that way are most likely to land.
+        Check the [roadmap](https://github.com/unnatidigiservices/postbase#roadmap) first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the problem or need, not only the solution.
+      placeholder: "Our editors want to know when a post is waiting for review…"
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like PostBase to do?
+    validations:
+      required: true
+  - type: dropdown
+    id: who
+    attributes:
+      label: Who is this for?
+      multiple: true
+      options:
+        - Writers / Contributors
+        - Editors
+        - Admins
+        - Blog readers
+        - Developers

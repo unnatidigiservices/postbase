@@ -1,0 +1,59 @@
+name: 🐞 Bug report
+description: Something in PostBase isn't working as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! **Security problems:** please don't file them here — see [SECURITY.md](https://github.com/unnatidigiservices/postbase/blob/main/SECURITY.md).
+        Questions and how-tos are answered at [postbase.top](https://postbase.top).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: "I pasted a list from Google Docs and…"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Write
+        2. Paste …
+        3. See …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: PostBase version
+      description: Shown in the admin footer, e.g. 0.12.0
+    validations:
+      required: true
+  - type: dropdown
+    id: setup
+    attributes:
+      label: How is PostBase installed?
+      options:
+        - On a GeoRank site (/blog/)
+        - In a folder next to another site (/blog/)
+        - As a whole site on its own domain
+    validations:
+      required: true
+  - type: input
+    id: php
+    attributes:
+      label: PHP version and host
+      placeholder: "PHP 8.2 on Hostinger (Apache)"
+  - type: input
+    id: browser
+    attributes:
+      label: Browser (for editor problems)
+      placeholder: "Chrome 140 on Windows"
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or error messages
+      description: Remove any passwords or private data first.

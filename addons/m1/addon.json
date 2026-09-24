@@ -1,0 +1,21 @@
+{
+  "name": "PostBase M1",
+  "type": "theme",
+  "version": "1.0.0",
+  "description": "Mobile One: one layout for every device. A 720px column, a 640px reading width, and a thumb-friendly header of three 100px blocks: logo, action and menu.",
+  "author": "Unnati Digi Services",
+  "homepage": "https://postbase.top",
+  "requires": "0.13.0",
+  "settings": [
+    { "key": "logo", "type": "image", "label": "Logo", "help": "Square works best. Shown in a 100×100 block.", "default": "" },
+    { "key": "logo_text", "type": "text", "label": "Text instead of a logo", "help": "Used when there is no logo image. Empty = the blog title.", "default": "" },
+    { "key": "action_type", "type": "select", "label": "Middle block", "options": { "button": "Button", "link": "Link", "text": "Text", "none": "Empty" }, "default": "button" },
+    { "key": "action_label", "type": "text", "label": "Middle block text", "default": "Subscribe" },
+    { "key": "action_url", "type": "url", "label": "Middle block link", "help": "Empty = the blog's RSS feed.", "default": "" },
+    { "key": "header_bg", "type": "color", "label": "Header background", "default": "#3a00c2" },
+    { "key": "container_bg", "type": "color", "label": "Container background", "default": "#ffffff" },
+    { "key": "footer_bg", "type": "color", "label": "Footer background", "default": "#160845" },
+    { "key": "page_bg", "type": "color", "label": "Outside background (seen on wide screens)", "default": "#eef1f7" },
+    { "key": "footer_text", "type": "text", "label": "Footer text", "help": "Empty = © year and the blog title.", "default": "" }
+  ]
+}

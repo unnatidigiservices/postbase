@@ -10,7 +10,7 @@
  */
 if (!defined('PB_ROOT')) { http_response_code(403); exit; }
 
-define('PB_VERSION', '0.12.1');
+define('PB_VERSION', '0.13.0');
 define('PB_HOMEPAGE', 'https://postbase.top');                             // project info, docs and support
 define('PB_REPO_URL', 'https://github.com/unnatidigiservices/postbase');    // source code and issues
 define('PB_SCHEMA_VERSION', 2);
@@ -338,6 +338,9 @@ function pb_settings_defaults() {
         // Settings → Navigation. JSON list of {label, url, new_tab}; '' = defaults.
         'nav_items'           => '',
         'nav_show_georank'    => '0',
+        // Settings → Addons. Active theme slug ('' = built-in default) and active plugins (JSON list).
+        'theme'               => '',
+        'plugins'             => '[]',
     ];
 }
 
@@ -380,7 +383,7 @@ function pb_nav_defaults() {
 function pb_nav_items() {
     $raw = (string) pb_setting('nav_items');
     $items = $raw !== '' ? json_decode($raw, true) : null;
-    return is_array($items) ? $items : pb_nav_defaults();
+    return pb_apply_filters('pb_nav_items', is_array($items) ? $items : pb_nav_defaults());
 }
 // Cleans a submitted nav list: drops blank rows and unsafe URLs, caps at 12 links.
 function pb_nav_clean(array $rows) {
@@ -636,6 +639,7 @@ function pb_post_save($user, $postId, array $in) {
         $fields['id'] = (int) $post['id'];
         pb_q('UPDATE posts SET ' . implode(', ', $sets) . ' WHERE id = :id', $fields);
         if ((int) $post['author_id'] !== (int) $user['id']) pb_log_event($post['id'], $user['id'], 'edited');
+        pb_do_action('pb_post_saved', (int) $post['id'], $user);
         return [(int) $post['id'], null];
     }
     $fields['author_id'] = (int) $user['id'];
@@ -645,6 +649,7 @@ function pb_post_save($user, $postId, array $in) {
     pb_q('INSERT INTO posts (' . implode(', ', $cols) . ') VALUES (:' . implode(', :', $cols) . ')', $fields);
     $id = (int) pb_db()->lastInsertId();
     pb_log_event($id, $user['id'], $fields['type'] === 'page' ? 'created page' : 'created');
+    pb_do_action('pb_post_saved', $id, $user);
     return [$id, null];
 }
 
@@ -688,11 +693,13 @@ function pb_post_transition($user, $post, $action, $note = '', $publishAtLocal =
         case 'delete':
             if (!pb_can($user, 'post.delete', $post)) return 'You can\'t delete this post.';
             pb_q('DELETE FROM posts WHERE id = ?', [$post['id']]);
+            pb_do_action('pb_post_deleted', $post, $user);
             return null;
         default:
             return 'Unknown action.';
     }
     pb_log_event($post['id'], $user['id'], $action, $note);
+    pb_do_action('pb_post_status_changed', pb_post_by_id($post['id']), $action, $user, $note);
     return null;
 }
 
@@ -1004,6 +1011,8 @@ function pb_layout_mode() {
     if ($m === 'standalone') return 'standalone';
     return pb_is_georank_site() ? 'georank' : 'standalone';
 }
+require __DIR__ . '/addons.php';
+
 // Adds "Sitemap: <blog sitemap>" to the site's robots.txt, outside GeoRank's
 // managed marker block so a GeoRank robots regeneration never removes it.
 function pb_robots_add_sitemap() {

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: ❓ Questions, guides & support
+    url: https://postbase.top
+    about: How-tos, setup help and support for Unnati PostBase.
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/unnatidigiservices/postbase/security/advisories/new
+    about: Please report security issues privately, never in a public issue.
+  - name: 💼 Commercial license & priority support
+    url: https://postbase.top
+    about: For agencies, SaaS and white-label use without AGPL obligations.

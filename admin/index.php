@@ -9,6 +9,7 @@ define('PB_BASE_PATH', rtrim(str_replace('\\', '/', dirname(dirname($_SERVER['SC
 require PB_ROOT . '/lib/postbase.php';
 
 pb_session_start();
+pb_load_plugins();
 header('X-Frame-Options: SAMEORIGIN');
 header('X-Content-Type-Options: nosniff');
 header('Referrer-Policy: strict-origin-when-cross-origin'); // YouTube embeds refuse to play without a referrer
@@ -62,6 +63,29 @@ function pb_image_field($name, $value, $label, $hint = '', $editable = true) {
     }
     if ($hint !== '') $h .= '<p class="pb-small pb-muted pb-hint">' . pb_e($hint) . '</p>';
     return $h . '</div>';
+}
+// One addon setting field, from its addon.json definition.
+function pb_addon_field_html(array $f, $value) {
+    $name = 'addon[' . $f['key'] . ']';
+    $label = (string) ($f['label'] ?? $f['key']);
+    $help = !empty($f['help']) ? '<span class="pb-small pb-muted pb-hint">' . pb_e($f['help']) . '</span>' : '';
+    switch ($f['type']) {
+        case 'image':
+            return pb_image_field($name, $value, $label, (string) ($f['help'] ?? ''));
+        case 'color':
+            return pb_color_field($name, $value, $label) . $help;
+        case 'select':
+            $h = '<label>' . pb_e($label) . '<select name="' . pb_e($name) . '">';
+            foreach ((array) ($f['options'] ?? []) as $k => $v) $h .= '<option value="' . pb_e($k) . '"' . ((string) $k === (string) $value ? ' selected' : '') . '>' . pb_e($v) . '</option>';
+            return $h . '</select>' . $help . '</label>';
+        case 'checkbox':
+            return '<label class="pb-check"><input type="checkbox" name="' . pb_e($name) . '" value="1"' . ($value === '1' ? ' checked' : '') . '> ' . pb_e($label) . '</label>' . $help;
+        case 'textarea':
+            return '<label>' . pb_e($label) . '<textarea name="' . pb_e($name) . '" rows="3">' . pb_e($value) . '</textarea>' . $help . '</label>';
+        default:
+            $type = $f['type'] === 'number' ? 'number' : ($f['type'] === 'url' ? 'text' : 'text');
+            return '<label>' . pb_e($label) . '<input type="' . $type . '" name="' . pb_e($name) . '" value="' . pb_e($value) . '"' . ($f['type'] === 'url' ? ' placeholder="https://… or /page/"' : '') . '>' . $help . '</label>';
+    }
 }
 // Hex colour with a picker; empty = inherit the site theme.
 function pb_color_field($name, $value, $label) {
@@ -305,6 +329,38 @@ if ($isPost) {
         pb_settings_save(['nav_items' => $items, 'nav_show_georank' => !empty($_POST['nav_show_georank']) ? '1' : '0']);
         pb_flash(!empty($_POST['reset']) ? 'Navigation reset to Home, Blog, Contact.' : 'Navigation saved.');
         pb_redirect('view=settings&tab=navigation');
+    }
+    if (in_array($do, ['addon_activate', 'addon_deactivate', 'addon_settings_save'], true) && pb_can($user, 'settings.manage')) {
+        $slug = (string) ($_POST['slug'] ?? '');
+        $a = $slug !== '' ? pb_addon($slug) : null;
+        if ($do === 'addon_activate' && $slug === '') {
+            pb_settings_save(['theme' => '']);
+            pb_flash('Default theme is active.');
+        } elseif (!$a) {
+            pb_flash('That addon isn\'t installed.', 'error');
+        } elseif ($do === 'addon_activate') {
+            if (!empty($a['error'])) {
+                pb_flash($a['name'] . ' can\'t be activated: ' . $a['error'], 'error');
+            } elseif ($a['type'] === 'theme') {
+                pb_settings_save(['theme' => $slug]);
+                pb_flash($a['name'] . ' is now your theme.' . (pb_layout_mode() === 'georank' ? ' (It shows when Layout is set to PostBase theme.)' : ''));
+            } else {
+                $list = pb_active_plugin_slugs();
+                if (!in_array($slug, $list, true)) $list[] = $slug;
+                pb_settings_save(['plugins' => json_encode(array_values($list))]);
+                pb_flash($a['name'] . ' activated.');
+            }
+        } elseif ($do === 'addon_deactivate') {
+            pb_settings_save(['plugins' => json_encode(array_values(array_diff(pb_active_plugin_slugs(), [$slug])))]);
+            pb_flash($a['name'] . ' deactivated.');
+        } else {
+            $in = is_array($_POST['addon'] ?? null) ? $_POST['addon'] : [];
+            $vals = [];
+            foreach ($a['settings'] as $f) $vals['addon:' . $slug . ':' . $f['key']] = pb_addon_clean_value($f, $in[$f['key']] ?? '');
+            pb_settings_save($vals);
+            pb_flash($a['name'] . ' settings saved.');
+        }
+        pb_redirect('view=settings&tab=addons' . ($do === 'addon_settings_save' ? '#addon-' . rawurlencode($slug) : ''));
     }
     if ($do === 'robots_sitemap' && pb_can($user, 'settings.manage')) {
         $msg = pb_robots_add_sitemap();
@@ -605,10 +661,10 @@ if ($view === 'edit') {
 } elseif ($view === 'settings' && pb_can($user, 'settings.manage')) {
     $title = 'Settings';
     $s = function ($k) { return pb_setting($k); };
-    $stab = in_array($_GET['tab'] ?? '', ['general', 'design', 'navigation'], true) ? $_GET['tab'] : 'general';
+    $stab = in_array($_GET['tab'] ?? '', ['general', 'design', 'navigation', 'addons'], true) ? $_GET['tab'] : 'general';
     $isGr = pb_is_georank_site(); ?>
 <div class="pb-tabs">
-  <?php foreach (['general' => 'General', 'design' => 'Design', 'navigation' => 'Navigation'] as $k => $label): ?>
+  <?php foreach (['general' => 'General', 'design' => 'Design', 'navigation' => 'Navigation', 'addons' => 'Addons'] as $k => $label): ?>
     <a href="<?= pb_e(pb_admin_url('view=settings&tab=' . $k)) ?>" class="<?= $k === $stab ? 'active' : '' ?>"><?= pb_e($label) ?></a>
   <?php endforeach; ?>
 </div>
@@ -658,6 +714,74 @@ if ($view === 'edit') {
     </div>
     <p class="pb-small pb-muted"><?= $isGr ? 'Empty values follow your GeoRank theme (Design tab), so the blog keeps matching the site.' : 'Empty values use the PostBase defaults.' ?></p>
   </div>
+</div>
+<?php elseif ($stab === 'addons'):
+    $addons = pb_addons();
+    $activeTheme = pb_active_theme();
+    $activePlugins = pb_active_plugin_slugs();
+    $themes = array_filter($addons, function ($a) { return ($a['type'] ?? '') === 'theme'; });
+    $plugins = array_filter($addons, function ($a) { return ($a['type'] ?? '') === 'plugin'; });
+    $broken = array_filter($addons, function ($a) { return !in_array($a['type'] ?? '', ['theme', 'plugin'], true); });
+    $withSettings = array_filter($addons, function ($a) use ($activeTheme, $activePlugins) {
+        return $a['settings'] && empty($a['error']) && (($activeTheme && $activeTheme['slug'] === $a['slug']) || in_array($a['slug'], $activePlugins, true));
+    });
+    $card = function ($a, $active, $actions) { ?>
+      <div class="pb-addon<?= $active ? ' is-active' : '' ?><?= !empty($a['error']) ? ' is-broken' : '' ?>">
+        <div class="pb-addon-head"><strong><?= pb_e($a['name']) ?></strong>
+          <?php if (!empty($a['version'])): ?><span class="pb-small pb-muted">v<?= pb_e($a['version']) ?></span><?php endif; ?>
+          <?php if ($active): ?><span class="pb-badge pb-badge-published">Active</span><?php endif; ?></div>
+        <?php if (!empty($a['description'])): ?><p class="pb-small"><?= pb_e($a['description']) ?></p><?php endif; ?>
+        <?php if (!empty($a['author'])): ?><p class="pb-small pb-muted">By <?= !empty($a['homepage']) && pb_safe_url($a['homepage']) ? '<a href="' . pb_e($a['homepage']) . '" target="_blank" rel="noopener">' . pb_e($a['author']) . '</a>' : pb_e($a['author']) ?></p><?php endif; ?>
+        <?php if (!empty($a['error'])): ?><p class="pb-small pb-danger-text">⚠ <?= pb_e($a['error']) ?></p><?php endif; ?>
+        <div class="pb-row"><?= $actions ?></div>
+      </div>
+    <?php };
+    $btn = function ($do, $slug, $label, $primary = false) {
+        return '<form method="post" class="pb-inline">' . pb_csrf_field() . '<input type="hidden" name="do" value="' . pb_e($do) . '"><input type="hidden" name="slug" value="' . pb_e($slug) . '">'
+             . '<button class="pb-btn pb-btn-sm' . ($primary ? ' pb-btn-primary' : '') . '">' . pb_e($label) . '</button></form>';
+    }; ?>
+<?php foreach ($GLOBALS['pb_addon_errors'] as $err): ?><div class="pb-flash pb-flash-error">Addon error (skipped safely): <?= pb_e($err) ?></div><?php endforeach; ?>
+<?php if (pb_layout_mode() === 'georank'): ?>
+  <div class="pb-note pb-note-info">This blog currently uses the <strong>GeoRank site design</strong>. Themes apply when Settings → General → Layout is set to <em>PostBase theme</em>. Plugins always apply.</div>
+<?php endif; ?>
+<div class="pb-card">
+  <h3 class="pb-h3">Themes</h3>
+  <div class="pb-addon-grid">
+    <?php $card(['name' => 'Default', 'version' => PB_VERSION, 'description' => 'The built-in PostBase layout.', 'author' => 'Unnati Digi Services', 'homepage' => PB_HOMEPAGE],
+        !$activeTheme, $activeTheme ? $btn('addon_activate', '', 'Activate', true) : ''); ?>
+    <?php foreach ($themes as $a): $on = $activeTheme && $activeTheme['slug'] === $a['slug'];
+        $card($a, $on, $on || !empty($a['error']) ? ($on && $a['settings'] ? '<a class="pb-btn pb-btn-sm" href="#addon-' . pb_e($a['slug']) . '">Settings</a>' : '') : $btn('addon_activate', $a['slug'], 'Activate', true));
+    endforeach; ?>
+  </div>
+</div>
+<div class="pb-card">
+  <h3 class="pb-h3">Plugins</h3>
+  <?php if (!$plugins): ?><p class="pb-small pb-muted">No plugins installed yet.</p><?php endif; ?>
+  <div class="pb-addon-grid">
+    <?php foreach ($plugins as $a): $on = in_array($a['slug'], $activePlugins, true);
+        $card($a, $on, $on ? $btn('addon_deactivate', $a['slug'], 'Deactivate') . ($a['settings'] ? ' <a class="pb-btn pb-btn-sm" href="#addon-' . pb_e($a['slug']) . '">Settings</a>' : '')
+                           : (empty($a['error']) ? $btn('addon_activate', $a['slug'], 'Activate', true) : ''));
+    endforeach; ?>
+  </div>
+</div>
+<?php foreach ($withSettings as $a): $vals = pb_addon_settings($a['slug']); ?>
+<form method="post" class="pb-card pb-addon-settings" id="addon-<?= pb_e($a['slug']) ?>">
+  <?= pb_csrf_field() ?><input type="hidden" name="do" value="addon_settings_save"><input type="hidden" name="slug" value="<?= pb_e($a['slug']) ?>">
+  <h3 class="pb-h3"><?= pb_e($a['name']) ?> settings</h3>
+  <div class="pb-addon-fields">
+  <?php foreach ($a['settings'] as $f): echo pb_addon_field_html($f, $vals[$f['key']] ?? ''); endforeach; ?>
+  </div>
+  <button class="pb-btn pb-btn-primary">Save <?= pb_e($a['name']) ?> settings</button>
+</form>
+<?php endforeach; ?>
+<?php if ($broken): ?>
+<div class="pb-card"><h3 class="pb-h3">Folders that aren't valid addons</h3>
+  <?php foreach ($broken as $a): $card($a, false, ''); endforeach; ?></div>
+<?php endif; ?>
+<div class="pb-card">
+  <h3 class="pb-h3">Add or build an addon</h3>
+  <p class="pb-small">Upload an addon folder into <code>addons/</code> (by FTP, File Manager or Git), then activate it here. For safety, addons can't be uploaded through this page — they run as code on your site, so only install addons you trust.</p>
+  <p class="pb-small">Developers: themes and plugins are a folder with an <code>addon.json</code> file. See the <a href="<?= PB_REPO_URL ?>/blob/main/docs/ADDONS.md" target="_blank" rel="noopener">addon guide</a> and the M1 theme in <code>addons/m1/</code> as a reference.</p>
 </div>
 <?php elseif ($stab === 'navigation'):
     $navItems = pb_nav_items();
@@ -730,7 +854,7 @@ if ($view === 'edit') {
     <label>Layout<select name="layout">
       <option value="auto"<?= $s('layout') === 'auto' ? ' selected' : '' ?>>Automatic (use the GeoRank site design when found)</option>
       <option value="georank"<?= $s('layout') === 'georank' ? ' selected' : '' ?>>GeoRank site header, footer and theme</option>
-      <option value="standalone"<?= $s('layout') === 'standalone' ? ' selected' : '' ?>>Standalone PostBase layout</option>
+      <option value="standalone"<?= $s('layout') === 'standalone' ? ' selected' : '' ?>>PostBase theme (choose it in Settings → Addons)</option>
     </select></label>
     <label class="pb-check"><input type="checkbox" name="pretty_urls" value="1"<?= $s('pretty_urls') === '1' ? ' checked' : '' ?>> Clean URLs (<code><?= pb_e(PB_BASE_PATH) ?>/my-post/</code>) — needs Apache mod_rewrite</label>
     <label>Site URL <span class="pb-muted pb-small">(optional, e.g. https://example.com — used for canonical links, RSS and sitemap)</span><input name="site_url" value="<?= pb_e($s('site_url')) ?>" placeholder="<?= pb_e(pb_origin()) ?>"></label>
@@ -877,7 +1001,7 @@ $nav = [
 <body class="pb-admin">
 <div class="pb-shell">
   <aside class="pb-sidebar">
-    <a class="pb-logo" href="<?= pb_e(pb_admin_url()) ?>" aria-label="Unnati PostBase"><img src="<?= pb_e(PB_BASE_PATH) ?>/assets/favicon.png" alt="" width="38" height="38"><span class="pb-wordmark"><small>Unnati</small><span>Post<b>Base</b></span></span></a>
+    <a class="pb-logo" href="<?= pb_e(pb_admin_url()) ?>" aria-label="Unnati PostBase"><img src="<?= pb_e(PB_BASE_PATH) ?>/assets/favicon.png" alt="" width="36" height="36"><img class="pb-wordmark-img" src="<?= pb_e(PB_BASE_PATH) ?>/assets/logo-wordmark.svg" alt="PostBase" height="28"></a>
     <nav>
       <?php foreach ($nav as [$key, $label, $icon, $show]): if (!$show) continue;
         $onPages = ($_GET['type'] ?? '') === 'page';
@@ -931,7 +1055,7 @@ function pb_auth_page($heading, $error, callable $body) {
 </head>
 <body class="pb-admin pb-auth">
   <div class="pb-auth-box">
-    <div class="pb-logo pb-logo-lg" role="img" aria-label="Unnati PostBase"><img src="<?= pb_e(PB_BASE_PATH) ?>/assets/apple-touch-icon.png" alt="" width="72" height="72"><span class="pb-wordmark"><small>Unnati</small><span>Post<b>Base</b></span></span></div>
+    <div class="pb-logo pb-logo-lg" role="img" aria-label="Unnati PostBase"><img src="<?= pb_e(PB_BASE_PATH) ?>/assets/apple-touch-icon.png" alt="" width="64" height="64"><img class="pb-wordmark-img" src="<?= pb_e(PB_BASE_PATH) ?>/assets/logo-wordmark.svg" alt="PostBase" height="48"></div>
     <p class="pb-tagline">Write simple, post fast</p>
     <div class="pb-card">
       <h1 class="pb-h2"><?= pb_e($heading) ?></h1>

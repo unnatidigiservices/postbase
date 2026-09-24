@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://postbase.top"><img src="assets/logo-wordmark.png" width="420" alt="Unnati PostBase"></a>
+  <a href="https://postbase.top"><img src="assets/logo.png" width="96" alt=""><br><img src="assets/logo-wordmark.svg" width="360" alt="Unnati PostBase"></a>
 </p>
 
 <p align="center"><strong>Write simple, post fast.</strong><br>
@@ -27,6 +27,8 @@ Drop the folder into `/blog/` on any PHP host, or onto a domain of its own, open
 ## Why PostBase exists
 
 [Unnati Digi Services](https://unnatidigiservices.in) built PostBase for its **[GeoRank](https://georank.co.in)** clients: local businesses whose sites needed a blog that loads fast on mobile, looks like the rest of the site, and never lets an unreviewed post go live. On a GeoRank site it installs in one click, uses the site's own header, footer, menu and theme, and signs GeoRank users in automatically.
+
+PostBase is also available as a **free add-on for [Unnati LiteCommerce](https://litecommerce.co.in) sites**, styled to match your brand.
 
 Nothing in it depends on GeoRank, though. It runs just as well beside any PHP website or as a standalone blog, so it's open source for everyone. Project information, guides and support live at **[postbase.top](https://postbase.top)**, which runs on PostBase itself.
 
@@ -63,6 +65,10 @@ Nothing in it depends on GeoRank, though. It runs just as well beside any PHP we
   - Tags: clean URLs, canonical tags, meta descriptions, Open Graph and Twitter cards.
   - Structured data: `BlogPosting` and `WebPage` JSON-LD.
   - Discovery: an XML sitemap, a summary RSS feed, reading time and search.
+- 🧩 **Themes and plugins.**
+  - Settings → Addons activates themes and plugins and gives each a settings form.
+  - Build your own with a folder and an `addon.json`; see [docs/ADDONS.md](docs/ADDONS.md).
+  - The first official addon is **PostBase M1** ("Mobile One"): one layout for every device, with a 720px column, a 640px reading width, and a thumb-friendly header of three 100px blocks (logo, action, menu). You pick the header, container, footer and outside colours.
 - 🎨 **Your design.** It follows the site's theme automatically. Settings → Design adds fonts, colours, a favicon and a default share image, and Settings → Navigation edits the menu.
 - 🔐 **Secure by default.**
   - Every post body passes a server-side HTML allowlist sanitizer.
@@ -137,7 +143,9 @@ Have an idea? [Open an issue](https://github.com/unnatidigiservices/postbase/iss
 | Report a bug or request a feature | [GitHub Issues](https://github.com/unnatidigiservices/postbase/issues) |
 | Report a security vulnerability (privately) | See [SECURITY.md](SECURITY.md) |
 | Buy a commercial license or priority support | [postbase.top](https://postbase.top) · [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) |
+| Build a theme or plugin | [docs/ADDONS.md](docs/ADDONS.md) |
 | Get a fast local-business website with the blog built in | [GeoRank](https://georank.co.in) |
+| Add a blog to your online store | [Unnati LiteCommerce](https://litecommerce.co.in) |
 
 PostBase is developed and maintained by **[Unnati Digi Services](https://unnatidigiservices.in)**.
 
@@ -146,7 +154,17 @@ PostBase is developed and maintained by **[Unnati Digi Services](https://unnatid
 PostBase is **dual-licensed**:
 
 - **[GNU AGPL-3.0-or-later](LICENSE):** free for everyone, including commercial websites, as long as you comply with the AGPL. That means sharing the source of any modified version you run for other people over a network.
-- **[Commercial license](COMMERCIAL-LICENSE.md):** for agencies, SaaS platforms and products that want to modify, white-label or bundle PostBase **without** AGPL obligations, plus priority support.
+- **[Commercial license](COMMERCIAL-LICENSE.md):** for sites, SaaS platforms and hosts that want to modify, white-label or bundle PostBase **without** AGPL obligations:
+
+  | License | Price |
+  |---|---|
+  | Single site | $17 / year |
+  | Single site, permanent (with custom design and CMS integration) | $97 one-time |
+  | White-label SaaS provider | $197 / year |
+  | Hosting company | $297 / year |
+  | Permanent Sponsor (a thank-you post about your product + a permanent listing on the Sponsors page) | $497 one-time |
+
+  Free on [GeoRank](https://georank.co.in) and [Unnati LiteCommerce](https://litecommerce.co.in) sites.
 
 See [NOTICE](NOTICE) for the copyright and licensing statement.
 

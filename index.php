@@ -17,6 +17,7 @@ define('PB_ROOT', __DIR__);
 define('PB_BASE_PATH', rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/'));
 require PB_ROOT . '/lib/postbase.php';
 require PB_ROOT . '/lib/theme.php';
+pb_load_plugins();
 
 // ---- route -----------------------------------------------------------------
 $route = (string) ($_GET['route'] ?? '');
@@ -154,7 +155,7 @@ if ($view === 'post') {
     <figure class="pb-cover"><img src="<?= pb_e($img) ?>" alt="<?= pb_e($post['cover_alt']) ?>" fetchpriority="high"></figure>
 <?php endif; ?>
     <div class="pb-content">
-<?= $post['body'] /* sanitized on save by pb_sanitize_html() */ ?>
+<?= pb_apply_filters('pb_post_content', $post['body'], $post) /* sanitized on save; plugins may add to it */ ?>
     </div>
   </article>
 </div>
@@ -205,7 +206,7 @@ if ($view === 'post') {
     <figure class="pb-cover"><img src="<?= pb_e($img) ?>" alt="<?= pb_e($post['cover_alt']) ?>" fetchpriority="high"></figure>
 <?php endif; ?>
     <div class="pb-content">
-<?= $post['body'] /* sanitized on save by pb_sanitize_html() */ ?>
+<?= pb_apply_filters('pb_post_content', $post['body'], $post) /* sanitized on save; plugins may add to it */ ?>
     </div>
   </article>
 <?php if ($prev || $next): ?>

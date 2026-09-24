@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.13.0 — 2026-09-24
+
+- **Addons: themes and plugins.** Addons live in `addons/<slug>/` with an `addon.json`. Settings → Addons activates them and renders each addon's settings form (text, textarea, url, image upload, colour, select, checkbox and number fields, validated by type).
+  - **Themes** return a renderer function that gets the full page (head, content, navigation, settings).
+  - **Plugins** hook in with `pb_add_action` / `pb_add_filter`. The hooks are `pb_init`, `pb_head`, `pb_body_end`, `pb_page_meta`, `pb_post_content`, `pb_card_html`, `pb_nav_items`, `pb_post_saved`, `pb_post_status_changed` and `pb_post_deleted`.
+  - A failing addon is logged and skipped; it never takes the blog down.
+  - The developer guide is `docs/ADDONS.md`.
+- **PostBase M1 theme** (first official addon): one layout for every device.
+  - A 720px column and a 640px reading width.
+  - A header of three permanent 100px blocks (logo or text, a button/link/text block, and a hamburger menu with search) that fits a 320–350px phone.
+  - Settings for header, container, footer and outside background colours, with automatic contrast text.
+- **New logo:** the "U + pen" icon and the "Post ✒ Base" wordmark as a clean SVG, with real transparent letter counters and automatic dark-mode colours.
+- Layout option "Standalone" is renamed **PostBase theme**.
+- Licensing: new commercial pricing, and PostBase is free on GeoRank and Unnati LiteCommerce sites. Permanent Sponsors get a dedicated thank-you post on the official blog and a permanent listing on the Sponsors page. Added a Sponsor button (`.github/FUNDING.yml`).
+
 ## 0.12.1 — 2026-09-24
 
 - **Security hardening:** PostBase now recreates its protective `.htaccess` files (`data/`, `uploads/`, `lib/`) whenever they're missing. Dot-files are often silently skipped by FTP clients, zip tools and GitHub's web uploader, which could leave the SQLite database folder unprotected on a fresh install.
