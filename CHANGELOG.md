@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.16.0 — 2026-09-25
+
+**Photo blogging from your phone.** For local businesses, a real, geotagged phone photo on their own blog often does more than a social media post seen by a few followers.
+
+- **Photo details are kept.**
+  - Uploads keep the camera's location (GPS), date taken and phone model. Resized copies keep them too, both the in-browser resize and the server resize.
+  - The orientation tag is reset to upright, because the pixels are already turned.
+  - Settings → General → *Photos* can remove them instead, which is advised when photos are taken at home. With removal on, the photo is rotated first, so it never ends up sideways.
+  - The Media Manager popup shows 📷 camera, 🕒 date taken and 📍 location, with a map link.
+  - Everything is done in pure PHP, so PHP's exif extension isn't needed.
+- **Automatic titles.** A post saved without a title is named after its publish time, e.g. "Post published on 25/09/2026 @ 10.50" (site timezone).
+  - A draft named this way is renamed to the real time when it's published.
+- **Keep me signed in** (on by default on the sign-in page).
+  - A device stays signed in for 180 days after its last visit. The database stores only a hash of each device's secret.
+  - My account → *Signed-in devices* lists devices and signs any of them out.
+  - Changing a password, or an admin resetting it, signs out the other devices. Logging out forgets the device.
+  - The sign-in page remembers your email on the device, so a phone's password manager can fill the password with Face ID or a fingerprint.
+- **Add to Home Screen.** A web app manifest and icons install the admin as an app that opens straight on **Write**, with Posts and Media shortcuts.
+  - Opening it while signed out comes back to Write after sign-in.
+- Database schema v3 (the `devices` table) is applied automatically.
+- The small sign-in logo on phones is fixed.
+
+## 0.15.0 — 2026-09-25
+
+**Write and publish from your phone.**
+
+- **Mobile admin.**
+  - The admin no longer spills off the right edge on phones. The sidebar becomes one compact row: the logo icon plus a swipeable menu.
+  - "View blog" and "GeoRank dashboard" move to the footer.
+  - Tapping a form field no longer zooms the page on iPhone.
+- **Mobile editor.**
+  - The formatting toolbar is one swipeable row that stays at the top while you write.
+  - **Save / Publish sit in a bar pinned to the bottom of the screen.** The bar steps aside while the keyboard is open.
+  - Wrapped images show full width, as they do on the published post.
+- **Phone photos upload fast.** Images are resized in the browser (to the 1600px limit) before uploading, so a 5–12 MB camera photo becomes a few hundred KB.
+  - The camera's rotation is applied, so portrait photos no longer turn sideways.
+  - Location (GPS) and other EXIF data are removed.
+  - The server also applies EXIF rotation when it resizes a JPEG (when PHP's `exif` extension is available).
+- **Wide screens:** the writing column stops at 750px, with the 320px settings panel beside it.
+- The editor shows **Submit for review** only to people who can't publish.
+
 ## 0.14.1 — 2026-09-25
 
 - Media Manager: fixed the screen-reader label ("Select file-name") showing on top of each thumbnail. The admin CSS was missing the visually-hidden `.pb-sr` style. The select checkbox is now a compact box in the corner.

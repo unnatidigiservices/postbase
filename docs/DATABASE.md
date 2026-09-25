@@ -66,10 +66,13 @@ posts          id, slug (unique), title, excerpt, body (sanitized HTML), cover_i
                category_id → categories (SET NULL), author_id → users,
                status (draft|pending|changes_requested|published|archived),
                seo_title, seo_description, created_at, updated_at, submitted_at,
-               published_at (future = scheduled), first_published_at, reviewed_by → users
+               published_at (future = scheduled), first_published_at, reviewed_by → users,
+               type (post|page), pinned                                          ← v2
 post_events    id, post_id → posts (CASCADE), user_id, action, note, created_at   ← audit trail
 settings       key, value
 login_attempts ip, attempted_at                                                  ← brute-force throttle
+devices        id, user_id → users (CASCADE), selector (unique), token_hash (SHA-256),
+               label, created_at, last_used_at, expires_at                       ← v3, "keep me signed in"
 ```
 
 Indexes: `posts(status, published_at)` for every public query, `posts(author_id, status)` for "my posts", `post_events(post_id, id)`.

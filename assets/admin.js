@@ -27,7 +27,87 @@
     update();
   });
 
-  function upload(file) {
+  // Phone photos are 3–15 MB and 4000+ px wide. Shrinking them in the browser
+  // first makes uploads fast on mobile data, keeps them under the size limit,
+  // and applies the camera's rotation. The photo's details (location, camera,
+  // date) are carried over unless Settings → General removes them. GIFs
+  // (animation) and small images are sent untouched; any failure sends the original.
+  function shrink(file) {
+    const maxPx = PB.maxPx || 1600;
+    if (!/^image\/(jpeg|png|webp)$/.test(file.type) || !window.URL || !URL.createObjectURL) return Promise.resolve(file);
+    // An <img> (unlike createImageBitmap in older browsers) always honours the EXIF rotation.
+    return new Promise((res, rej) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); res(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('decode')); };
+      img.src = url;
+    }).then((img) => {
+      const iw = img.naturalWidth, ih = img.naturalHeight;
+      const big = iw > maxPx;
+      if (!iw || (!big && file.size <= 1048576)) return file;
+      const w = big ? maxPx : iw;
+      const h = Math.round(ih * w / iw);
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const type = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+      const ctx = canvas.getContext('2d');
+      if (type === 'image/jpeg') { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); } // transparent WebP
+      ctx.drawImage(img, 0, 0, w, h);
+      const keep = PB.keepMeta && file.type === 'image/jpeg' && file.slice
+        ? file.slice(0, 131072).arrayBuffer().then(exifSegment).catch(() => null) : Promise.resolve(null);
+      return Promise.all([new Promise((res) => canvas.toBlob(res, type, 0.86)), keep]).then(([blob, exif]) => {
+        if (!blob || (blob.size >= file.size && !big)) return file;
+        // The canvas drops the camera's metadata; carry it over (location, camera,
+        // date), marked upright because the canvas already turned the pixels.
+        if (exif && type === 'image/jpeg') blob = new Blob([blob.slice(0, 2), upright(exif), blob.slice(2)], { type });
+        const name = file.name.replace(/\.[a-z0-9]+$/i, '') + (type === 'image/png' ? '.png' : '.jpg');
+        return new File([blob], name, { type });
+      });
+    }).catch(() => file);
+  }
+
+  // The EXIF (APP1) segment of a JPEG, or null. Same walk as lib/media.php.
+  function exifSegment(buf) {
+    const v = new DataView(buf);
+    if (v.byteLength < 4 || v.getUint16(0) !== 0xFFD8) return null;
+    let i = 2;
+    while (i + 4 <= v.byteLength && v.getUint8(i) === 0xFF) {
+      const m = v.getUint8(i + 1);
+      if (m === 0xFF) { i++; continue; }
+      if (m === 0xDA || m === 0xD9) break;
+      if (m === 0x01 || (m >= 0xD0 && m <= 0xD7)) { i += 2; continue; }
+      const len = v.getUint16(i + 2);
+      if (m === 0xE1 && i + 10 <= v.byteLength && v.getUint32(i + 4) === 0x45786966 && v.getUint16(i + 8) === 0) {
+        return i + 2 + len <= v.byteLength ? new Uint8Array(buf.slice(i, i + 2 + len)) : null;
+      }
+      i += 2 + len;
+    }
+    return null;
+  }
+  // Sets the EXIF orientation tag (0x0112) to 1 = upright.
+  function upright(seg) {
+    const v = new DataView(seg.buffer);
+    const t = 10;
+    if (seg.length < t + 8) return seg;
+    const le = v.getUint16(t) === 0x4949;
+    const ifd = t + v.getUint32(t + 4, le);
+    if (ifd + 2 > seg.length) return seg;
+    const n = v.getUint16(ifd, le);
+    for (let k = 0; k < n; k++) {
+      const e = ifd + 2 + k * 12;
+      if (e + 12 > seg.length) break;
+      if (v.getUint16(e, le) === 0x0112) v.setUint16(e + 8, 1, le);
+    }
+    return seg;
+  }
+
+  function upload(original) {
+    return shrink(original).then(send);
+  }
+
+  function send(file) {
     if (file.size > (PB.maxMb || 5) * 1048576) return Promise.reject(new Error('Images must be ' + (PB.maxMb || 5) + ' MB or smaller.'));
     const fd = new FormData();
     fd.append('do', 'upload');
@@ -231,6 +311,21 @@
       const meta = () => { $('#pbLbMeta').textContent = (img.naturalWidth ? img.naturalWidth + ' × ' + img.naturalHeight + ' px · ' : '') + d.size + ' · ' + d.date; };
       meta();
       img.onload = meta;
+      // Photo details kept from the camera (EXIF): shows the metadata survived the upload.
+      let photo = null;
+      try { photo = d.photo ? JSON.parse(d.photo) : null; } catch (e) { /* ignore */ }
+      const pInfo = $('#pbLbPhoto');
+      pInfo.hidden = !photo;
+      if (photo) {
+        const bits = [];
+        if (photo.camera) bits.push('📷 ' + esc(photo.camera));
+        if (photo.taken) bits.push('🕒 Taken ' + esc(photo.taken));
+        if (photo.lat !== null && photo.lng !== null) {
+          bits.push('📍 <a href="https://www.google.com/maps?q=' + encodeURIComponent(photo.lat + ',' + photo.lng) + '" target="_blank" rel="noopener">'
+            + esc(photo.lat.toFixed(5) + ', ' + photo.lng.toFixed(5)) + '</a>');
+        }
+        pInfo.innerHTML = bits.join('<br>');
+      }
       let used = [];
       try { used = JSON.parse(d.used || '[]'); } catch (e) { /* ignore */ }
       $('#pbLbUsed').innerHTML = used.length
@@ -313,6 +408,27 @@
       if (form.requestSubmit) form.requestSubmit(); else { body.value = sourceMode ? body.value : cleanHtml(); dirty = false; form.submit(); }
     }
   });
+
+  // Phones pin Save/Publish to the bottom of the screen (admin.css). While the
+  // on-screen keyboard is open the writer needs that room, so the bar steps
+  // aside and comes back as soon as the keyboard closes. The keyboard is
+  // detected by the visible viewport shrinking, which works on iOS and Android.
+  if ($('.pb-actions', form)) {
+    document.body.classList.add('pb-has-actions');
+    const vv = window.visualViewport;
+    const viewH = () => (vv ? vv.height : window.innerHeight);
+    let fullH = viewH();
+    const typingIn = (el) => !!el && (el.isContentEditable || el.matches('#pbTitle, textarea, .pb-source'));
+    const check = () => {
+      const h = viewH();
+      if (h > fullH) fullH = h;
+      document.body.classList.toggle('pb-typing', fullH - h > 150 && typingIn(document.activeElement));
+    };
+    (vv || window).addEventListener('resize', check);
+    form.addEventListener('focusin', () => setTimeout(check, 350));
+    form.addEventListener('focusout', () => setTimeout(check, 60));
+    window.addEventListener('orientationchange', () => setTimeout(() => { fullH = 0; check(); }, 400));
+  }
 
   // New post: suggest a URL slug from the title until the slug is edited by hand.
   const title = $('#pbTitle');

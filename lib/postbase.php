@@ -10,10 +10,10 @@
  */
 if (!defined('PB_ROOT')) { http_response_code(403); exit; }
 
-define('PB_VERSION', '0.14.1');
+define('PB_VERSION', '0.16.0');
 define('PB_HOMEPAGE', 'https://postbase.top');                             // project info, docs and support
 define('PB_REPO_URL', 'https://github.com/unnatidigiservices/postbase');    // source code and issues
-define('PB_SCHEMA_VERSION', 2);
+define('PB_SCHEMA_VERSION', 3);
 define('PB_DATA_DIR', PB_ROOT . '/data');
 define('PB_UPLOAD_DIR', PB_ROOT . '/uploads');
 // The site's web root: PB_ROOT itself when PostBase runs at a domain root
@@ -284,7 +284,24 @@ function pb_migrate(PDO $pdo) {
         $pdo->exec('ALTER TABLE posts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
         $pdo->exec('CREATE INDEX idx_posts_type ON posts(type, status, published_at)');
     }
-    // Future schema changes go here as: if ($v < 3) { ... }
+    if ($v < 3) {
+        // 0.16: "Keep me signed in" devices. Only a SHA-256 of each device's
+        // secret is stored; the secret itself lives in that device's cookie.
+        $pdo->exec("
+            CREATE TABLE devices (
+                id           INTEGER PRIMARY KEY,
+                user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                selector     TEXT NOT NULL UNIQUE,
+                token_hash   TEXT NOT NULL,
+                label        TEXT NOT NULL DEFAULT '',
+                created_at   TEXT NOT NULL,
+                last_used_at TEXT NOT NULL,
+                expires_at   INTEGER NOT NULL
+            );
+            CREATE INDEX idx_devices_user ON devices(user_id);
+        ");
+    }
+    // Future schema changes go here as: if ($v < 4) { ... }
     $pdo->exec('PRAGMA user_version = ' . (int) PB_SCHEMA_VERSION);
     $pdo->commit();
 }
@@ -323,6 +340,7 @@ function pb_settings_defaults() {
         'site_url'            => '',
         'language'            => 'en',
         'show_author'         => '1',
+        'photo_metadata'      => 'keep',          // keep | strip — EXIF location, camera, date (lib/media.php)
         'georank_sso'         => '1',
         'georank_editor_role' => 'editor',        // what a GeoRank "Editor" login becomes here
         // Settings → Design. Empty = inherit (GeoRank site theme, or PostBase defaults).
@@ -497,6 +515,70 @@ function pb_attempt_login($email, $password) {
     pb_q('DELETE FROM login_attempts WHERE ip = ?', [$ip]);
     return null;
 }
+// ----------------------------------------------------------------------------
+// "KEEP ME SIGNED IN" — typing a long email and password on a phone is the
+// hardest part of mobile publishing. After one sign-in, a device (e.g. the
+// PostBase app on the home screen) stays signed in for PB_DEVICE_DAYS days
+// of inactivity. Cookie = selector:secret; the database keeps only a hash of
+// the secret, so a leaked database can't sign anyone in. Each device can be
+// signed out from My account; a password change signs out all other devices.
+// ----------------------------------------------------------------------------
+define('PB_DEVICE_COOKIE', 'pb_device');
+define('PB_DEVICE_DAYS', 180);
+
+function pb_device_cookie($value, $expires) {
+    setcookie(PB_DEVICE_COOKIE, $value, ['expires' => $expires, 'path' => PB_BASE_PATH . '/admin/',
+        'secure' => pb_is_https(), 'httponly' => true, 'samesite' => 'Lax']);
+}
+function pb_device_label() {
+    $ua = (string) ($_SERVER['HTTP_USER_AGENT'] ?? '');
+    $os = preg_match('/iPhone/', $ua) ? 'iPhone' : (preg_match('/iPad/', $ua) ? 'iPad' : (preg_match('/Android/', $ua) ? 'Android'
+        : (preg_match('/Windows/', $ua) ? 'Windows' : (preg_match('/Macintosh/', $ua) ? 'Mac' : (preg_match('/CrOS/', $ua) ? 'Chromebook' : (preg_match('/Linux/', $ua) ? 'Linux' : 'Device'))))));
+    $br = preg_match('/Edg\//', $ua) ? 'Edge' : (preg_match('/SamsungBrowser/', $ua) ? 'Samsung Internet' : (preg_match('/Firefox|FxiOS/', $ua) ? 'Firefox'
+        : (preg_match('/Chrome|CriOS/', $ua) ? 'Chrome' : (preg_match('/Safari/', $ua) ? 'Safari' : ''))));
+    return trim($os . ($br !== '' ? ' · ' . $br : ''));
+}
+function pb_device_remember($userId) {
+    $selector = bin2hex(random_bytes(9));
+    $secret = bin2hex(random_bytes(32));
+    $expires = time() + PB_DEVICE_DAYS * 86400;
+    pb_q('INSERT INTO devices (user_id, selector, token_hash, label, created_at, last_used_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [(int) $userId, $selector, hash('sha256', $secret), pb_device_label(), pb_now(), pb_now(), $expires]);
+    pb_device_cookie($selector . ':' . $secret, $expires);
+    $_SESSION['pb_device'] = $selector;
+}
+// Signs the visitor in from their device cookie when the session has ended.
+function pb_device_login() {
+    $raw = (string) ($_COOKIE[PB_DEVICE_COOKIE] ?? '');
+    if ($raw === '' || !empty($_SESSION['pb_uid'])) return;
+    $parts = explode(':', $raw, 2);
+    $row = count($parts) === 2 && ctype_xdigit($parts[0]) ? pb_row('SELECT * FROM devices WHERE selector = ?', [$parts[0]]) : null;
+    $valid = $row && hash_equals($row['token_hash'], hash('sha256', $parts[1])) && (int) $row['expires_at'] > time();
+    $u = $valid ? pb_user_by_id($row['user_id']) : null;
+    if (!$u || $u['source'] !== 'local') {
+        if ($row && !$valid) pb_q('DELETE FROM devices WHERE id = ?', [$row['id']]); // wrong secret or expired: retire it
+        pb_device_cookie('', time() - 3600);
+        return;
+    }
+    session_regenerate_id(true);
+    $_SESSION['pb_uid'] = (int) $u['id'];
+    $_SESSION['pb_device'] = $row['selector'];
+    $expires = time() + PB_DEVICE_DAYS * 86400; // sliding: every visit extends it
+    pb_q('UPDATE devices SET last_used_at = ?, expires_at = ?, label = ? WHERE id = ?', [pb_now(), $expires, pb_device_label(), $row['id']]);
+    pb_q('UPDATE users SET last_login_at = ? WHERE id = ?', [pb_now(), $u['id']]);
+    pb_device_cookie($raw, $expires);
+}
+function pb_device_forget_current() {
+    if (!empty($_SESSION['pb_device'])) pb_q('DELETE FROM devices WHERE selector = ?', [(string) $_SESSION['pb_device']]);
+    unset($_SESSION['pb_device']);
+    if (isset($_COOKIE[PB_DEVICE_COOKIE])) pb_device_cookie('', time() - 3600);
+}
+// All of a user's devices, optionally except the current one.
+function pb_device_forget_all($userId, $keepCurrent = false) {
+    $keep = $keepCurrent ? (string) ($_SESSION['pb_device'] ?? '') : '';
+    pb_q('DELETE FROM devices WHERE user_id = ? AND selector != ?', [(int) $userId, $keep]);
+}
+
 function pb_role_label($role) {
     return ['contributor' => 'Contributor', 'editor' => 'Editor', 'admin' => 'Admin'][$role] ?? $role;
 }
@@ -604,7 +686,13 @@ function pb_post_save($user, $postId, array $in) {
     if (!$post && !pb_can($user, 'post.create')) return [0, 'You can\'t create posts.'];
 
     $title = trim((string) ($in['title'] ?? ''));
-    if ($title === '') $title = 'Untitled post';
+    // Photo posts often have no title: name them after their publish time,
+    // e.g. "Post published on 25/09/2026 @ 10.50" (site timezone).
+    if ($title === '') {
+        $when = ($post && $post['status'] === 'published' ? $post['published_at'] : null)
+            ?: pb_local_to_utc($in['publish_at'] ?? '') ?: pb_now();
+        $title = ($post['type'] ?? ($in['type'] ?? 'post')) === 'page' ? 'Untitled page' : 'Post published on ' . pb_format_date($when, 'd/m/Y @ H.i');
+    }
     $title = function_exists('mb_substr') ? mb_substr($title, 0, 200) : substr($title, 0, 200);
     $body = pb_sanitize_html($in['body'] ?? '');
     $excerpt = trim(strip_tags((string) ($in['excerpt'] ?? '')));
@@ -677,6 +765,10 @@ function pb_post_transition($user, $post, $action, $note = '', $publishAtLocal =
             $when = pb_local_to_utc($publishAtLocal) ?: ($post['status'] === 'published' && $post['published_at'] ? $post['published_at'] : $now);
             pb_q("UPDATE posts SET status = 'published', published_at = ?, first_published_at = COALESCE(first_published_at, ?),
                   reviewed_by = ? WHERE id = ?", [$when, $when, $user['id'], $post['id']]);
+            // An automatic "Post published on …" title follows the real publish time.
+            if (preg_match('~^Post published on \d\d/\d\d/\d{4} @ \d\d\.\d\d$~', $post['title'])) {
+                pb_q('UPDATE posts SET title = ? WHERE id = ?', ['Post published on ' . pb_format_date($when, 'd/m/Y @ H.i'), $post['id']]);
+            }
             $action = $when > $now ? 'scheduled' : ($post['status'] === 'pending' ? 'approved' : 'published');
             break;
         case 'request_changes':
@@ -889,27 +981,54 @@ function pb_store_image($tmpPath, $origName, $isUpload) {
 
     [$w, $h] = [$info[0], $info[1]];
     $max = (int) pb_config('max_image_px');
+    // Photo metadata (EXIF: location, camera, date) is kept unless Settings →
+    // General says to remove it. See lib/media.php.
+    $strip = pb_setting('photo_metadata') === 'strip';
+    $jpeg = $ext === 'jpg' ? (string) file_get_contents($tmpPath) : '';
+    $exif = $jpeg !== '' ? pb_jpeg_exif_segment($jpeg) : '';
+    $orient = $exif !== '' ? (int) (pb_exif_parse($exif)['orientation'] ?? 1) : 1;
+    $orient = $orient >= 2 && $orient <= 8 ? $orient : 1;
+    $sideways = $orient >= 5;
+    // Re-encode when too wide, or when metadata must go but the camera's
+    // rotation lives only in that metadata (the pixels need turning first).
     $resized = false;
-    if ($w > $max && $ext !== 'gif' && function_exists('imagecreatetruecolor')) {
-        $loaders = ['jpg' => 'imagecreatefromjpeg', 'png' => 'imagecreatefrompng', 'webp' => 'imagecreatefromwebp'];
-        $savers  = ['jpg' => 'imagejpeg', 'png' => 'imagepng', 'webp' => 'imagewebp'];
-        if (function_exists($loaders[$ext]) && function_exists($savers[$ext])) {
-            $src = @$loaders[$ext]($tmpPath);
+    $mustTurn = $strip && $orient !== 1;
+    if (($sideways ? $h : $w) > $max || $mustTurn) {
+        if ($ext !== 'gif' && function_exists('imagecreatetruecolor')) {
+            $loaders = ['jpg' => 'imagecreatefromjpeg', 'png' => 'imagecreatefrompng', 'webp' => 'imagecreatefromwebp'];
+            $savers  = ['jpg' => 'imagejpeg', 'png' => 'imagepng', 'webp' => 'imagewebp'];
+            $src = function_exists($loaders[$ext]) && function_exists($savers[$ext]) ? @$loaders[$ext]($tmpPath) : false;
             if ($src) {
-                $nh = (int) round($h * $max / $w);
-                $dst = imagecreatetruecolor($max, $nh);
+                if ($orient !== 1) {
+                    $src = pb_gd_orient($src, $orient);
+                    [$w, $h] = [imagesx($src), imagesy($src)];
+                }
+                $nw = min($w, $max);
+                $nh = (int) round($h * $nw / $w);
+                $dst = imagecreatetruecolor($nw, $nh);
                 if ($ext !== 'jpg') { imagealphablending($dst, false); imagesavealpha($dst, true); }
-                imagecopyresampled($dst, $src, 0, 0, 0, 0, $max, $nh, $w, $h);
+                imagecopyresampled($dst, $src, 0, 0, 0, 0, $nw, $nh, $w, $h);
                 $ok = $ext === 'jpg' ? imagejpeg($dst, $dest, 85) : ($ext === 'png' ? imagepng($dst, $dest, 7) : imagewebp($dst, $dest, 82));
                 imagedestroy($src);
                 imagedestroy($dst);
-                if ($ok) { $resized = true; [$w, $h] = [$max, $nh]; }
+                if ($ok) {
+                    $resized = true;
+                    [$w, $h] = [$nw, $nh];
+                    // GD drops EXIF: put it back, marked upright since the pixels now are.
+                    if (!$strip && $exif !== '') @file_put_contents($dest, pb_jpeg_add_exif((string) file_get_contents($dest), pb_exif_upright($exif)));
+                }
             }
         }
     }
     if (!$resized) {
-        $moved = $isUpload ? move_uploaded_file($tmpPath, $dest) : @rename($tmpPath, $dest);
+        if ($strip && $exif !== '') {
+            $moved = @file_put_contents($dest, pb_jpeg_strip_meta($jpeg)) !== false;
+            if ($moved) @unlink($tmpPath);
+        } else {
+            $moved = $isUpload ? move_uploaded_file($tmpPath, $dest) : @rename($tmpPath, $dest);
+        }
         if (!$moved) return ['error' => 'Could not save the image.'];
+        if (!$strip && $sideways) [$w, $h] = [$h, $w]; // shown upright by the browser
     } elseif (!$isUpload) {
         @unlink($tmpPath);
     }

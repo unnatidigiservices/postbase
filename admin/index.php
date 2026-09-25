@@ -8,7 +8,37 @@ define('PB_ROOT', dirname(__DIR__));
 define('PB_BASE_PATH', rtrim(str_replace('\\', '/', dirname(dirname($_SERVER['SCRIPT_NAME']))), '/'));
 require PB_ROOT . '/lib/postbase.php';
 
+// Web app manifest: "Add to Home Screen" installs the admin as an app that
+// opens straight on Write. Public (no session), holds nothing private.
+if (isset($_GET['manifest'])) {
+    $name = (string) pb_setting('blog_title');
+    header('Content-Type: application/manifest+json');
+    header('Cache-Control: public, max-age=3600');
+    echo json_encode([
+        'name' => $name . ' · PostBase',
+        'short_name' => (function_exists('mb_strlen') ? mb_strlen($name) : strlen($name)) <= 12 ? $name : 'PostBase',
+        'description' => 'Write anywhere, post here.',
+        'id' => PB_BASE_PATH . '/admin/',
+        'start_url' => PB_BASE_PATH . '/admin/?view=edit',
+        'scope' => PB_BASE_PATH . '/admin/',
+        'display' => 'standalone',
+        'background_color' => '#ffffff',
+        'theme_color' => '#1d5cff',
+        'icons' => [
+            ['src' => PB_BASE_PATH . '/assets/icon-192.png', 'sizes' => '192x192', 'type' => 'image/png', 'purpose' => 'any maskable'],
+            ['src' => PB_BASE_PATH . '/assets/icon-512.png', 'sizes' => '512x512', 'type' => 'image/png', 'purpose' => 'any maskable'],
+        ],
+        'shortcuts' => [
+            ['name' => 'Write', 'url' => PB_BASE_PATH . '/admin/?view=edit'],
+            ['name' => 'Posts', 'url' => PB_BASE_PATH . '/admin/?view=posts'],
+            ['name' => 'Media', 'url' => PB_BASE_PATH . '/admin/?view=media'],
+        ],
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 pb_session_start();
+pb_device_login();
 pb_load_plugins();
 header('X-Frame-Options: SAMEORIGIN');
 header('X-Content-Type-Options: nosniff');
@@ -36,6 +66,16 @@ function pb_georank_admin_url() {
     $hits = glob(PB_SITE_DIR . '/*/georank-config.json');
     if (!$hits) return null;
     return pb_site_base_path() . '/' . basename(dirname($hits[0])) . '/';
+}
+// Home-screen app tags, shared by the admin and sign-in pages.
+function pb_app_head() {
+    $b = pb_e(PB_BASE_PATH);
+    return '<link rel="manifest" href="' . $b . '/admin/?manifest=1">' . "\n"
+         . '<meta name="theme-color" content="#1d5cff">' . "\n"
+         . '<meta name="mobile-web-app-capable" content="yes">' . "\n"
+         . '<meta name="apple-mobile-web-app-capable" content="yes">' . "\n"
+         . '<meta name="apple-mobile-web-app-title" content="PostBase">' . "\n"
+         . '<meta name="apple-mobile-web-app-status-bar-style" content="default">' . "\n";
 }
 function pb_csrf_field() {
     return '<input type="hidden" name="_csrf" value="' . pb_e(pb_csrf_token()) . '">';
@@ -143,6 +183,7 @@ if (!$user && pb_count_users() === 0) {
 // ============================================================================
 if (isset($_GET['logout'])) {
     if (hash_equals(pb_csrf_token(), (string) $_GET['logout'])) {
+        pb_device_forget_current();
         unset($_SESSION['pb_uid']);
         session_regenerate_id(true);
     }
@@ -156,16 +197,33 @@ if (!$user) {
     if ($isPost && ($_POST['do'] ?? '') === 'login') {
         pb_csrf_check();
         $err = pb_attempt_login($_POST['email'] ?? '', $_POST['password'] ?? '');
-        if ($err === null) pb_redirect();
+        if ($err === null) {
+            if (!empty($_POST['remember'])) pb_device_remember($_SESSION['pb_uid']);
+            pb_redirect(preg_match('/^view=[a-z]+$/', (string) ($_POST['next'] ?? '')) ? (string) $_POST['next'] : '');
+        }
     }
     $gr = pb_georank_admin_url();
-    pb_auth_page('Sign in', $err, function () use ($gr) { ?>
-        <form method="post">
+    pb_auth_page('Sign in', $err, function () use ($gr, $view) { ?>
+        <form method="post" id="pbLogin">
           <?= pb_csrf_field() ?><input type="hidden" name="do" value="login">
-          <label>Email<input type="email" name="email" required autofocus value="<?= pb_e($_POST['email'] ?? '') ?>" autocomplete="username"></label>
-          <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
+          <input type="hidden" name="next" value="<?= isset($_GET['view']) && preg_match('/^[a-z]+$/', $view) ? 'view=' . pb_e($view) : '' ?>">
+          <label>Email<input type="email" name="email" id="pbLoginEmail" required autofocus value="<?= pb_e($_POST['email'] ?? '') ?>" autocomplete="username" autocapitalize="none" spellcheck="false" inputmode="email"></label>
+          <label>Password<input type="password" name="password" id="pbLoginPass" required autocomplete="current-password"></label>
+          <label class="pb-check pb-small"><input type="checkbox" name="remember" value="1" checked> Keep me signed in on this device (<?= PB_DEVICE_DAYS ?> days)</label>
           <button class="pb-btn pb-btn-primary pb-btn-block">Sign in</button>
         </form>
+        <script>
+        // Remember the email on this device, so next time only the password is needed
+        // (and a phone's password manager can fill that with a fingerprint or Face ID).
+        (function () {
+          var e = document.getElementById('pbLoginEmail'), p = document.getElementById('pbLoginPass');
+          try {
+            var saved = localStorage.getItem('pb_login_email');
+            if (saved && !e.value) { e.value = saved; p.focus(); }
+            document.getElementById('pbLogin').addEventListener('submit', function () { localStorage.setItem('pb_login_email', e.value.trim()); });
+          } catch (err) { /* private mode: no storage, nothing to remember */ }
+        })();
+        </script>
         <?php if ($gr): ?><p class="pb-muted pb-center">Site owner? <a href="<?= pb_e($gr) ?>">Sign in to GeoRank</a> and come back — you'll be signed in here automatically.</p><?php endif;
     });
     exit;
@@ -276,6 +334,8 @@ if ($isPost) {
             if ($pass !== '') {
                 if (strlen($pass) < 8) { pb_flash('Passwords need at least 8 characters.', 'error'); pb_redirect('view=users'); }
                 pb_q('UPDATE users SET password_hash = ? WHERE id = ?', [password_hash($pass, PASSWORD_DEFAULT), $id]);
+                if ($id !== (int) $user['id']) pb_device_forget_all($id); // a reset password signs their devices out
+                else pb_device_forget_all($id, true);
             }
         } else {
             if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($pass) < 8) {
@@ -311,6 +371,7 @@ if ($isPost) {
             'site_url' => rtrim($siteUrl, '/'),
             'language' => preg_replace('/[^a-zA-Z\-]/', '', (string) ($_POST['language'] ?? 'en')) ?: 'en',
             'show_author' => !empty($_POST['show_author']) ? '1' : '0',
+            'photo_metadata' => ($_POST['photo_metadata'] ?? '') === 'strip' ? 'strip' : 'keep',
             'georank_sso' => !empty($_POST['georank_sso']) ? '1' : '0',
             'georank_editor_role' => in_array($_POST['georank_editor_role'] ?? '', PB_ROLES, true) ? $_POST['georank_editor_role'] : 'editor',
             // Homepage: '' (latest posts) or the id of a published Page.
@@ -398,8 +459,19 @@ if ($isPost) {
             }
             if (strlen($new) < 8) { pb_flash('Use at least 8 characters.', 'error'); pb_redirect('view=account'); }
             pb_q('UPDATE users SET password_hash = ? WHERE id = ?', [password_hash($new, PASSWORD_DEFAULT), $user['id']]);
+            pb_device_forget_all($user['id'], true);
         }
         pb_flash('Account updated.');
+        pb_redirect('view=account');
+    }
+    if ($do === 'device_forget') {
+        $d = pb_row('SELECT selector FROM devices WHERE id = ? AND user_id = ?', [(int) ($_POST['id'] ?? 0), $user['id']]);
+        if ($d && $d['selector'] === ($_SESSION['pb_device'] ?? '')) {
+            pb_device_forget_current(); // this device: forget it, but stay signed in until the session ends
+        } elseif ($d) {
+            pb_q('DELETE FROM devices WHERE id = ? AND user_id = ?', [(int) $_POST['id'], $user['id']]);
+        }
+        pb_flash('Device signed out.');
         pb_redirect('view=account');
     }
 
@@ -469,7 +541,7 @@ if ($view === 'edit') {
     <textarea name="body" id="pbBody" class="pb-source" hidden><?= pb_e($p['body']) ?></textarea>
     <?php if ($canEdit): ?>
     <p class="pb-editor-tip">Write anywhere, paste here: Word, Google Docs, WordPress blocks and Markdown keep their formatting, and pasted images are saved to your blog.
-      Shortcuts: <code>##</code> heading · <code>-</code> list · <code>1.</code> numbered · <code>&gt;</code> quote · <code>**bold**</code> · <code>*italic*</code> · <code>`code`</code> · <code>---</code> line</p>
+      <span class="pb-editor-tip-keys">Shortcuts: <code>##</code> heading · <code>-</code> list · <code>1.</code> numbered · <code>&gt;</code> quote · <code>**bold**</code> · <code>*italic*</code> · <code>`code`</code> · <code>---</code> line</span></p>
     <?php endif; ?>
     <div class="pb-imgbar" id="pbImgBar" hidden role="toolbar" aria-label="Image options">
       <span class="pb-imgbar-label">Wrap</span>
@@ -506,7 +578,7 @@ if ($view === 'edit') {
         <?php endif; ?>
         <div class="pb-actions">
           <button class="pb-btn pb-btn-primary" data-then="save">Save<?= $p['status'] === 'published' ? ' changes' : ' draft' ?></button>
-          <?php if (pb_can($user, 'post.submit', $p)): ?>
+          <?php if (pb_can($user, 'post.submit', $p) && !pb_can($user, 'post.publish', $p)): ?>
             <button class="pb-btn pb-btn-primary" data-then="submit">Submit for review</button>
           <?php endif; ?>
           <?php if (pb_can($user, 'post.publish', $p) && $p['status'] !== 'published'): ?>
@@ -894,6 +966,13 @@ if ($view === 'edit') {
     </select>
     <span class="pb-small pb-muted"><?= $pubPages ? 'With a page as the homepage, the post list moves to <code>' . pb_e(pb_url('posts') === pb_url('home') ? PB_BASE_PATH . '/posts/' : pb_url('posts')) . '</code> and the page\'s own address redirects to the homepage.' : 'Publish a Page (Pages → New page) to use it as the homepage.' ?></span></label>
 
+    <h3 class="pb-h3">Photos</h3>
+    <label>Photo details (location, camera, date taken)<select name="photo_metadata">
+      <option value="keep"<?= $s('photo_metadata') !== 'strip' ? ' selected' : '' ?>>Keep them in the photo (recommended)</option>
+      <option value="strip"<?= $s('photo_metadata') === 'strip' ? ' selected' : '' ?>>Remove them when uploading</option>
+    </select>
+    <span class="pb-small pb-muted">Real photos with their location and date are a genuine signal for search engines, especially for local businesses. Remove them only if photos are taken somewhere private, such as your home. Applies to new uploads.</span></label>
+
     <h3 class="pb-h3">Layout &amp; URLs</h3>
     <label>Layout<select name="layout">
       <option value="auto"<?= $s('layout') === 'auto' ? ' selected' : '' ?>>Automatic (use the GeoRank site design when found)</option>
@@ -963,8 +1042,8 @@ if ($view === 'edit') {
 <form method="post" id="pbMediaDelete">
   <?= pb_csrf_field() ?><input type="hidden" name="do" value="media_delete"><input type="hidden" name="back" value="<?= pb_e($back) ?>">
   <div class="pb-media-grid" id="pbMedia">
-  <?php foreach ($items as $i => $m): $used = $usage[$m['url']] ?? []; ?>
-    <figure class="pb-media-item" data-index="<?= $i ?>" data-url="<?= pb_e($m['url']) ?>" data-full="<?= pb_e(pb_abs_url($m['url'])) ?>"
+  <?php foreach ($items as $i => $m): $used = $usage[$m['url']] ?? []; $photo = pb_photo_info(PB_UPLOAD_DIR . '/' . $m['rel']); ?>
+    <figure class="pb-media-item" data-index="<?= $i ?>" data-url="<?= pb_e($m['url']) ?>" data-full="<?= pb_e(pb_abs_url($m['url'])) ?>"<?= $photo ? ' data-photo="' . pb_e(json_encode($photo)) . '"' : '' ?>
             data-name="<?= pb_e($m['name']) ?>" data-size="<?= pb_e(pb_human_size($m['size'])) ?>" data-date="<?= pb_e(pb_format_date(gmdate('Y-m-d H:i:s', $m['mtime']), 'j M Y, g:i a')) ?>"
             data-rel="<?= pb_e($m['rel']) ?>" data-used="<?= pb_e(json_encode($used)) ?>">
       <?php if ($canDel): ?><label class="pb-media-check" title="Select"><input type="checkbox" name="paths[]" value="<?= pb_e($m['rel']) ?>" data-used="<?= count($used) ?>"><span class="pb-sr">Select <?= pb_e($m['name']) ?></span></label><?php endif; ?>
@@ -989,6 +1068,7 @@ if ($view === 'edit') {
     <div class="pb-lightbox-info">
       <h3 class="pb-h3" id="pbLbName"></h3>
       <p class="pb-small pb-muted" id="pbLbMeta"></p>
+      <p class="pb-small" id="pbLbPhoto" hidden></p>
       <label class="pb-small">Link (use in posts)<div class="pb-row pb-copy-row"><input id="pbLbUrl" readonly><button type="button" class="pb-btn pb-btn-sm pb-btn-primary" data-lb="copy">Copy link</button></div></label>
       <label class="pb-small">Full URL<div class="pb-row pb-copy-row"><input id="pbLbFull" readonly><button type="button" class="pb-btn pb-btn-sm" data-lb="copyfull">Copy</button></div></label>
       <div id="pbLbUsed" class="pb-small"></div>
@@ -1014,7 +1094,26 @@ if ($view === 'edit') {
   <?php endif; ?>
   <button class="pb-btn pb-btn-primary">Save</button>
 </form>
-<?php
+<?php if ($user['source'] === 'local'):
+    $devices = pb_all('SELECT id, selector, label, created_at, last_used_at FROM devices WHERE user_id = ? AND expires_at > ? ORDER BY last_used_at DESC', [$user['id'], time()]);
+    $here = (string) ($_SESSION['pb_device'] ?? ''); ?>
+<div class="pb-card pb-narrow">
+  <h3 class="pb-h3">Signed-in devices</h3>
+  <p class="pb-small pb-muted">Devices where you ticked “Keep me signed in”. They stay signed in for <?= PB_DEVICE_DAYS ?> days after their last visit. Lost a phone? Sign it out here. Changing your password signs out every other device.</p>
+  <?php if (!$devices): ?>
+    <p class="pb-small pb-muted">None yet.</p>
+  <?php else: ?>
+  <table class="pb-table pb-devices">
+    <?php foreach ($devices as $d): ?>
+    <tr><td><strong><?= pb_e($d['label'] ?: 'Device') ?></strong><?= $d['selector'] === $here ? ' <span class="pb-pin">This device</span>' : '' ?>
+        <br><span class="pb-small pb-muted">Last used <?= pb_e(pb_format_date($d['last_used_at'], 'j M Y, g:i a')) ?> · added <?= pb_e(pb_format_date($d['created_at'], 'j M Y')) ?></span></td>
+      <td class="pb-right"><form method="post" class="pb-inline"><?= pb_csrf_field() ?><input type="hidden" name="do" value="device_forget"><input type="hidden" name="id" value="<?= (int) $d['id'] ?>">
+        <button class="pb-btn pb-btn-sm"<?= $d['selector'] === $here ? ' data-confirm="Sign this device out? You will need your password next time."' : '' ?>>Sign out</button></form></td></tr>
+    <?php endforeach; ?>
+  </table>
+  <?php endif; ?>
+</div>
+<?php endif;
 
 } else {
     // ---- posts list --------------------------------------------------------
@@ -1103,9 +1202,10 @@ $nav = [
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
-<title><?= pb_e($title) ?> · <?= pb_e(pb_setting('blog_title')) ?> · PostBase</title>
+<?= pb_app_head() ?>
+<title><?= pb_e($title) ?> ·<?= pb_e(pb_setting('blog_title')) ?> · PostBase</title>
 <link rel="icon" href="<?= pb_e(PB_BASE_PATH) ?>/assets/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="<?= pb_e(PB_BASE_PATH) ?>/assets/apple-touch-icon.png">
 <link rel="stylesheet" href="<?= pb_e(PB_BASE_PATH) ?>/assets/admin.css?v=<?= pb_e(PB_VERSION) ?>">
@@ -1140,10 +1240,10 @@ $nav = [
       <div class="pb-flash pb-flash-<?= pb_e($type) ?>" role="status"><?= pb_e($msg) ?></div>
     <?php endforeach; ?>
     <?= $content ?>
-    <footer class="pb-admin-foot">Unnati PostBase <?= pb_e(PB_VERSION) ?> · <a href="<?= PB_HOMEPAGE ?>" target="_blank" rel="noopener">Help &amp; support</a> · <a href="<?= PB_REPO_URL ?>" target="_blank" rel="noopener">GitHub</a></footer>
+    <footer class="pb-admin-foot"><span class="pb-mobile-only"><a href="<?= pb_e(pb_url()) ?>" target="_blank" rel="noopener">View blog ↗</a> · <?php if ($georankUrl): ?><a href="<?= pb_e($georankUrl) ?>">GeoRank dashboard</a> · <?php endif; ?></span>Unnati PostBase <?= pb_e(PB_VERSION) ?> · <a href="<?= PB_HOMEPAGE ?>" target="_blank" rel="noopener">Help &amp; support</a> · <a href="<?= PB_REPO_URL ?>" target="_blank" rel="noopener">GitHub</a></footer>
   </div>
 </div>
-<script>window.PB = <?= json_encode(['csrf' => pb_csrf_token(), 'endpoint' => pb_admin_url(), 'maxMb' => pb_config('max_upload_mb'), 'adminUrl' => pb_admin_url()]) ?>;</script>
+<script>window.PB = <?= json_encode(['csrf' => pb_csrf_token(), 'endpoint' => pb_admin_url(), 'maxMb' => pb_config('max_upload_mb'), 'maxPx' => (int) pb_config('max_image_px'), 'keepMeta' => pb_setting('photo_metadata') !== 'strip','adminUrl' => pb_admin_url()]) ?>;</script>
 <script src="<?= pb_e(PB_BASE_PATH) ?>/assets/paste.js?v=<?= pb_e(PB_VERSION) ?>"></script>
 <script src="<?= pb_e(PB_BASE_PATH) ?>/assets/admin.js?v=<?= pb_e(PB_VERSION) ?>"></script>
 </body>
@@ -1158,8 +1258,9 @@ function pb_auth_page($heading, $error, callable $body) {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
+<?= pb_app_head() ?>
 <title><?= pb_e($heading) ?> · PostBase</title>
 <link rel="icon" href="<?= pb_e(PB_BASE_PATH) ?>/assets/favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="<?= pb_e(PB_BASE_PATH) ?>/assets/apple-touch-icon.png">

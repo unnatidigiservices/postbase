@@ -52,7 +52,7 @@ a { color: var(--pb-accent); }
 code { font-size: .9em; background: var(--pb-surface-2); padding: 1px 5px; border-radius: 5px; }
 
 /* shell */
-.pb-shell { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+.pb-shell { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
 .pb-sidebar { background: var(--pb-surface); border-right: 1px solid var(--pb-border); padding: 20px 14px; display: flex; flex-direction: column; gap: 18px; position: sticky; top: 0; height: 100vh; }
 .pb-logo { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--pb-text); padding: 0 6px; }
 .pb-wordmark-img { display: block; height: 28px; width: auto; }
@@ -140,7 +140,8 @@ input[readonly], textarea[readonly] { background: var(--pb-surface-2); }
 .pb-empty-admin { text-align: center; padding: 48px 20px; color: var(--pb-muted); }
 
 /* editor */
-.pb-edit-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; align-items: start; }
+/* The writing column stops at 750px: comfortable line length on wide screens */
+.pb-edit-grid { display: grid; grid-template-columns: minmax(0, 750px) 320px; gap: 18px; align-items: start; }
 .pb-editor-card { padding: 22px 26px; }
 .pb-title-input { border: 0; padding: 4px 10px 10px; margin: 0; font-size: 30px; font-weight: 700; letter-spacing: -.02em; background: transparent; border-bottom: 1px solid var(--pb-border); border-radius: 0; }
 .pb-title-input:focus { outline: none; border-bottom-color: var(--pb-accent); }
@@ -292,19 +293,56 @@ body.pb-noscroll { overflow: hidden; }
 .pb-auth .pb-card { padding: 26px; }
 
 /* responsive */
+.pb-mobile-only { display: none; }
 @media (max-width: 1100px) {
-  .pb-edit-grid, .pb-two-col { grid-template-columns: 1fr; }
+  .pb-edit-grid, .pb-two-col { grid-template-columns: minmax(0, 1fr); }
+  .pb-edit-grid { max-width: 750px; }
 }
+
+/* Phones: one compact header row, a one-line scrolling toolbar and a
+   Save/Publish bar pinned to the bottom, so a post can be written and
+   published entirely from a phone. */
 @media (max-width: 760px) {
-  .pb-shell { grid-template-columns: 1fr; }
-  .pb-sidebar { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; padding: 10px 12px; gap: 8px; border-right: 0; border-bottom: 1px solid var(--pb-border); }
-  .pb-sidebar nav { flex-direction: row; overflow-x: auto; width: 100%; }
-  .pb-sidebar nav a { white-space: nowrap; padding: 7px 10px; }
-  .pb-sidebar-foot { flex-direction: row; margin: 0 0 0 auto; font-size: 13px; }
-  .pb-logo { font-size: 18px; }
-  .pb-main { padding: 16px; }
-  .pb-editor-card { padding: 16px; }
-  .pb-title-input { font-size: 24px; }
+  .pb-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
+  .pb-sidebar { position: static; height: auto; min-width: 0; flex-direction: row; align-items: center; padding: 8px 10px; gap: 6px; border-right: 0; border-bottom: 1px solid var(--pb-border); }
+  .pb-sidebar .pb-logo { padding: 0 2px; flex: none; }
+  .pb-sidebar .pb-logo img { width: 32px; height: 32px; }
+  .pb-sidebar .pb-logo .pb-wordmark-img { display: none; }
+  .pb-auth .pb-logo-lg .pb-wordmark-img { height: 40px; }
+  .pb-sidebar nav { flex: 1 1 auto; min-width: 0; flex-direction: row; gap: 2px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .pb-sidebar nav::-webkit-scrollbar { display: none; }
+  .pb-sidebar nav a { white-space: nowrap; padding: 8px 10px; gap: 6px; font-size: 14px; }
+  .pb-sidebar-foot { display: none; }
+  .pb-mobile-only { display: inline; }
+  .pb-main { padding: 14px 12px 24px; }
+  .pb-topbar { margin-bottom: 12px; }
+  .pb-topbar h1 { font-size: 21px; }
+  .pb-user { font-size: 13px; gap: 10px; }
+  .pb-admin-foot { margin-top: 24px; line-height: 1.9; }
+  /* 16px stops iOS from zooming into a field when it is tapped */
+  input, select, textarea { font-size: 16px; }
+  .pb-copy-row input { font-size: 13px; }
+  .pb-card.pb-flush, .pb-two-col .pb-card { overflow-x: auto; }
   .pb-posts th:nth-child(n+3), .pb-posts td:nth-child(n+3) { display: none; }
-  .pb-two-col .pb-card { overflow-x: auto; }
+
+  /* editor */
+  .pb-editor-card { padding: 12px 12px 14px; }
+  .pb-title-input { font-size: 22px; padding: 4px 6px 10px; }
+  .pb-toolbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -12px; padding: 6px 8px; }
+  .pb-toolbar::-webkit-scrollbar { display: none; }
+  .pb-toolbar button { flex: none; white-space: nowrap; padding: 8px 11px; font-size: 15px; }
+  .pb-tright { margin-left: 0; }
+  .pb-editor { min-height: 55vh; padding: 14px 6px; }
+  .pb-editor-tip-keys { display: none; }
+  .pb-prose .pb-align-left, .pb-prose .pb-align-right { float: none; width: 100%; margin: 1.2em 0; }
+  .pb-imgbar { left: 8px !important; right: 8px; }
+  .pb-imgbar button { padding: 7px 9px; }
+  .pb-edit-grid .pb-actions { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; flex-direction: row; gap: 8px; margin: 0;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); background: var(--pb-surface); border-top: 1px solid var(--pb-border); box-shadow: 0 -6px 20px rgba(15, 27, 61, .12); }
+  .pb-edit-grid .pb-actions .pb-btn { flex: 1 1 0; padding: 12px 10px; min-width: 0; }
+  body.pb-has-actions { padding-bottom: calc(70px + env(safe-area-inset-bottom)); }
+  body.pb-has-actions .pb-toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
+  /* while typing, the keyboard needs the room; the bar returns when you tap out */
+  body.pb-typing .pb-edit-grid .pb-actions { display: none; }
+  body.pb-typing.pb-has-actions { padding-bottom: 0; }
 }
