@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.17.0 — 2026-09-25
+
+- **"Upgraded automatically" notice.** PostBase can be updated without anyone clicking anything: a hosting panel's Git auto-deploy (e.g. Hostinger), GeoRank's installer, or FTP.
+  - The first admin visit on a new version records it.
+  - Admins see *"PostBase was upgraded automatically to version …"* on every admin page until they press **Dismiss**. It shows the previous version and time, and a **What's new** list taken from this changelog.
+  - If several updates arrive before anyone looks, the notice covers all of them.
+  - Editors and Contributors don't see it.
+
+## 0.16.1 — 2026-09-25
+
+- The editor (750px writing column plus the 320px panel) is centred on wide screens, instead of leaving empty space on the right.
+
 ## 0.16.0 — 2026-09-25
 
 **Photo blogging from your phone.** For local businesses, a real, geotagged phone photo on their own blog often does more than a social media post seen by a few followers.

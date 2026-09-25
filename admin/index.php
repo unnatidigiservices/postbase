@@ -229,6 +229,8 @@ if (!$user) {
     exit;
 }
 
+pb_version_check();
+
 // ============================================================================
 // POST ACTIONS (all CSRF-checked, all permission-checked in the library)
 // ============================================================================
@@ -236,6 +238,10 @@ if ($isPost) {
     pb_csrf_check();
     $do = (string) ($_POST['do'] ?? '');
 
+    if ($do === 'upgrade_dismiss' && pb_can($user, 'settings.manage')) {
+        pb_settings_save(['upgrade_notice' => '']);
+        pb_redirect(preg_match('/^[a-z]+$/', (string) ($_POST['back'] ?? '')) ? 'view=' . $_POST['back'] : '');
+    }
     if ($do === 'upload') {
         if (!pb_can($user, 'media.upload')) pb_json(['error' => 'Not allowed.'], 403);
         $r = pb_handle_upload($_FILES['file'] ?? null);
@@ -1236,6 +1242,21 @@ $nav = [
         <?php if (!empty($_SESSION['pb_uid'])): ?><a href="<?= pb_e(pb_admin_url('logout=' . pb_csrf_token())) ?>">Log out</a><?php endif; ?>
       </div>
     </header>
+    <?php if (pb_can($user, 'settings.manage') && ($up = pb_upgrade_notice())): $notes = pb_changelog_between((string) $up['from'], (string) $up['to']); ?>
+    <div class="pb-upgrade" role="status">
+      <div class="pb-upgrade-head">
+        <span class="pb-upgrade-icon" aria-hidden="true">⬆️</span>
+        <div><strong>PostBase was upgraded automatically to version <?= pb_e($up['to']) ?></strong>
+          <span class="pb-small pb-muted"><?= $up['from'] !== '' ? 'from ' . pb_e($up['from']) . ' · ' : '' ?><?= pb_e(pb_format_date($up['at'], 'j M Y, g:i a')) ?></span></div>
+        <form method="post" class="pb-upgrade-dismiss"><?= pb_csrf_field() ?><input type="hidden" name="do" value="upgrade_dismiss"><input type="hidden" name="back" value="<?= pb_e($view) ?>">
+          <button class="pb-btn pb-btn-sm">Dismiss</button></form>
+      </div>
+      <?php if ($notes): ?>
+      <details class="pb-upgrade-notes"><summary>What's new</summary><div class="pb-changelog"><?= pb_md_lite(implode("\n\n", $notes)) ?></div>
+        <p class="pb-small"><a href="<?= PB_REPO_URL ?>/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Full changelog on GitHub ↗</a></p></details>
+      <?php endif; ?>
+    </div>
+    <?php endif; ?>
     <?php foreach ($flashes as [$type, $msg]): ?>
       <div class="pb-flash pb-flash-<?= pb_e($type) ?>" role="status"><?= pb_e($msg) ?></div>
     <?php endforeach; ?>

@@ -10,7 +10,7 @@
  */
 if (!defined('PB_ROOT')) { http_response_code(403); exit; }
 
-define('PB_VERSION', '0.16.0');
+define('PB_VERSION', '0.17.0');
 define('PB_HOMEPAGE', 'https://postbase.top');                             // project info, docs and support
 define('PB_REPO_URL', 'https://github.com/unnatidigiservices/postbase');    // source code and issues
 define('PB_SCHEMA_VERSION', 3);
@@ -364,7 +364,76 @@ function pb_settings_defaults() {
         // Settings → Code: raw HTML/JS added to every public page (Admin only).
         'code_head'           => '',
         'code_footer'         => '',
+        // Version bookkeeping: the version that last ran, and an upgrade notice
+        // ({from, to, at} JSON) that Admins see until they dismiss it.
+        'installed_version'   => '',
+        'upgrade_notice'      => '',
     ];
+}
+
+// ----------------------------------------------------------------------------
+// UPGRADE NOTICE — new files can arrive without anyone clicking anything
+// (a hosting panel's Git auto-deploy, GeoRank's installer, FTP). The first
+// admin request on a new version records it, and Admins see "upgraded to
+// version …" until they dismiss it.
+// ----------------------------------------------------------------------------
+function pb_version_check() {
+    $known = (string) pb_setting('installed_version');
+    if ($known === PB_VERSION) return;
+    $save = ['installed_version' => PB_VERSION];
+    // An existing site (not a fresh install) that predates this bookkeeping: the old version is unknown.
+    $existing = $known !== '' || (int) pb_val('SELECT COUNT(*) FROM users WHERE created_at < ?', [gmdate('Y-m-d H:i:s', time() - 3600)]) > 0;
+    if ($existing) {
+        $prev = json_decode((string) pb_setting('upgrade_notice'), true);
+        // Several updates before anyone looked: keep the oldest "from".
+        $from = is_array($prev) && isset($prev['from']) ? (string) $prev['from'] : $known;
+        $save['upgrade_notice'] = json_encode(['from' => $from, 'to' => PB_VERSION, 'at' => pb_now()]);
+    }
+    pb_settings_save($save);
+}
+function pb_upgrade_notice() {
+    $n = json_decode((string) pb_setting('upgrade_notice'), true);
+    return is_array($n) && !empty($n['to']) ? $n : null;
+}
+// CHANGELOG.md sections for versions after $from up to $to (newest first, at most 6).
+function pb_changelog_between($from, $to) {
+    $md = (string) @file_get_contents(PB_ROOT . '/CHANGELOG.md');
+    $out = [];
+    foreach (preg_split('/^(?=## )/m', $md) as $sec) {
+        if (!preg_match('/^## ([0-9][0-9A-Za-z.\-]*)/', $sec, $m)) continue;
+        $v = $m[1];
+        if (version_compare($v, $to, '>')) continue;
+        if ($from !== '' ? !version_compare($v, $from, '>') : $v !== $to) continue;
+        $out[] = trim($sec);
+        if (count($out) >= 6) break;
+    }
+    return $out;
+}
+// Just enough Markdown for the changelog: headings, nested bullets, bold, code, links.
+function pb_md_lite($md) {
+    $inline = function ($s) {
+        $s = pb_e($s);
+        $s = preg_replace('/\*\*(.+?)\*\*/', '<strong>$1</strong>', $s);
+        $s = preg_replace('/(?<![\w*])\*(?!\s)(.+?)\*(?!\w)/', '<em>$1</em>', $s);
+        $s = preg_replace('/`([^`]+)`/', '<code>$1</code>', $s);
+        return preg_replace('/\[([^\]]+)\]\((https:\/\/[^)\s"]+)\)/', '<a href="$2" target="_blank" rel="noopener">$1</a>', $s);
+    };
+    $html = '';
+    $depth = 0;
+    foreach (preg_split('/\R/', (string) $md) as $line) {
+        if (preg_match('/^(\s*)- (.*)$/', $line, $m)) {
+            $want = intdiv(strlen($m[1]), 2) + 1;
+            while ($depth < $want) { $html .= '<ul>'; $depth++; }
+            while ($depth > $want) { $html .= '</ul>'; $depth--; }
+            $html .= '<li>' . $inline($m[2]) . '</li>';
+            continue;
+        }
+        while ($depth > 0) { $html .= '</ul>'; $depth--; }
+        if (preg_match('/^## (.*)$/', $line, $m)) $html .= '<h4>' . $inline($m[1]) . '</h4>';
+        elseif (trim($line) !== '') $html .= '<p>' . $inline($line) . '</p>';
+    }
+    while ($depth > 0) { $html .= '</ul>'; $depth--; }
+    return $html;
 }
 
 // Font choices for Settings → Design. Web-safe stacks only, so the blog never
