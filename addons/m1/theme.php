@@ -63,7 +63,8 @@ return function (array $page) {
     </div>
     <div id="m1-menu" class="m1-menu" hidden>
       <?= pb_nav_html('m1-menu-links') ?>
-      <form class="m1-search" role="search" method="get" action="<?= pb_e($page['blog_url']) ?>">
+      <form class="m1-search" role="search" method="get" action="<?= pb_e($page['posts_url'] ?? $page['blog_url']) ?>">
+        <?php if (strpos((string) ($page['posts_url'] ?? ''), '?list=1') !== false): ?><input type="hidden" name="list" value="1"><?php endif; ?>
         <label class="m1-sr" for="m1-q">Search posts</label>
         <input id="m1-q" type="search" name="q" placeholder="Search posts…">
         <button type="submit">Search</button>
@@ -81,7 +82,7 @@ return function (array $page) {
     </div>
   </footer>
 </div>
-<script src="<?= pb_e($page['theme_url'] . '/theme.js?v=1.0.0') ?>" defer></script>
+<script src="<?= pb_e($page['theme_url'] . '/theme.js?v=' . ($page['theme_version'] ?? '1')) ?>" defer></script>
 <?= $page['body_end'] ?>
 </body>
 </html>

@@ -140,6 +140,141 @@
   }
 
   // ======================================================================
+  // MEDIA MANAGER — thumbnails, popup viewer, copy link, multi-select delete
+  // ======================================================================
+  const mediaGrid = $('#pbMedia');
+  const mediaUploadBtn = $('#pbMediaUploadBtn');
+  if (mediaUploadBtn) {
+    const input = $('#pbMediaFiles');
+    mediaUploadBtn.addEventListener('click', () => input.click());
+    input.addEventListener('change', () => {
+      const files = Array.from(input.files || []);
+      input.value = '';
+      if (!files.length) return;
+      mediaUploadBtn.disabled = true;
+      let done = 0;
+      let failed = 0;
+      const next = (i) => {
+        if (i >= files.length) {
+          toast(done + ' image' + (done === 1 ? '' : 's') + ' uploaded' + (failed ? ', ' + failed + ' failed' : '') + ' ✓', !!failed && !done);
+          setTimeout(() => location.reload(), 700);
+          return;
+        }
+        mediaUploadBtn.textContent = 'Uploading ' + (i + 1) + ' of ' + files.length + '…';
+        upload(files[i]).then(() => { done++; }).catch((err) => { failed++; toast(files[i].name + ': ' + err.message, true); }).finally(() => next(i + 1));
+      };
+      next(0);
+    });
+  }
+  function copyText(text, label) {
+    const ok = () => toast((label || 'Link') + ' copied ✓');
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(ok, () => fallbackCopy(text, ok));
+    } else {
+      fallbackCopy(text, ok);
+    }
+  }
+  function fallbackCopy(text, ok) { // http:// sites and older browsers
+    const t = document.createElement('textarea');
+    t.value = text;
+    t.style.position = 'fixed';
+    t.style.opacity = '0';
+    document.body.appendChild(t);
+    t.select();
+    let copied = false;
+    try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+    t.remove();
+    if (copied) { ok(); return; }
+    // Clipboard blocked (some browsers/embedded views): select the visible link so Ctrl+C works at once.
+    const field = $all('.pb-copy-row input').find((i) => i.value === text);
+    if (field) { field.focus(); field.select(); }
+    toast('Your browser blocked copying — the link is selected, press Ctrl+C.', true);
+  }
+  if (mediaGrid) {
+    const items = $all('.pb-media-item', mediaGrid);
+    const lb = $('#pbLightbox');
+    const delForm = $('#pbMediaDelete');
+    const delBtn = $('#pbMediaDeleteBtn');
+    const allBox = $('#pbMediaAll');
+    let cur = -1;
+    const boxes = () => $all('input[name="paths[]"]', mediaGrid);
+    const syncSelection = () => {
+      const picked = boxes().filter((b) => b.checked);
+      items.forEach((it) => { const b = $('input[name="paths[]"]', it); it.classList.toggle('is-selected', !!(b && b.checked)); });
+      if (delBtn) { delBtn.disabled = !picked.length; $('span', delBtn).textContent = picked.length; }
+      if (allBox) allBox.checked = picked.length > 0 && picked.length === boxes().length;
+    };
+    mediaGrid.addEventListener('change', syncSelection);
+    if (allBox) allBox.addEventListener('change', () => { boxes().forEach((b) => { b.checked = allBox.checked; }); syncSelection(); });
+    if (delForm) {
+      delForm.addEventListener('submit', (e) => {
+        const picked = boxes().filter((b) => b.checked);
+        if (!picked.length) { e.preventDefault(); return; }
+        const inUse = picked.filter((b) => Number(b.dataset.used) > 0).length;
+        const msg = 'Delete ' + picked.length + ' image' + (picked.length === 1 ? '' : 's') + '?'
+          + (inUse ? '\n\n⚠ ' + inUse + ' of them ' + (inUse === 1 ? 'is' : 'are') + ' used in a post, page or setting and will show as broken there.' : '')
+          + '\n\nThis cannot be undone.';
+        if (!window.confirm(msg)) e.preventDefault();
+      });
+    }
+
+    const show = (i) => {
+      if (i < 0 || i >= items.length) return;
+      cur = i;
+      const d = items[i].dataset;
+      const img = $('#pbLbImg');
+      img.src = d.url;
+      img.alt = d.name;
+      $('#pbLbName').textContent = d.name;
+      $('#pbLbUrl').value = d.url;
+      $('#pbLbFull').value = d.full;
+      const meta = () => { $('#pbLbMeta').textContent = (img.naturalWidth ? img.naturalWidth + ' × ' + img.naturalHeight + ' px · ' : '') + d.size + ' · ' + d.date; };
+      meta();
+      img.onload = meta;
+      let used = [];
+      try { used = JSON.parse(d.used || '[]'); } catch (e) { /* ignore */ }
+      $('#pbLbUsed').innerHTML = used.length
+        ? '<strong>Used in:</strong><ul>' + used.map((u) => '<li>' + (u.kind === 'setting'
+            ? 'Setting: ' + esc(u.title)
+            : '<a href="' + esc(PB.adminUrl + '?view=edit&id=' + u.id) + '">' + (u.kind === 'page' ? 'Page: ' : 'Post: ') + esc(u.title) + '</a>') + '</li>').join('') + '</ul>'
+        : '<span class="pb-muted">Not used in any post, page or setting yet.</span>';
+      $('.pb-lightbox-prev', lb).disabled = i === 0;
+      $('.pb-lightbox-next', lb).disabled = i === items.length - 1;
+      lb.hidden = false;
+      document.body.classList.add('pb-noscroll');
+    };
+    const hide = () => { lb.hidden = true; document.body.classList.remove('pb-noscroll'); if (items[cur]) $('.pb-media-thumb', items[cur]).focus(); };
+    mediaGrid.addEventListener('click', (e) => {
+      const t = e.target.closest('.pb-media-thumb');
+      if (t) show(Number(t.closest('.pb-media-item').dataset.index));
+    });
+    lb.addEventListener('click', (e) => {
+      const act = e.target.closest('[data-lb]');
+      if (e.target === lb) { hide(); return; }
+      if (!act) return;
+      const d = items[cur] ? items[cur].dataset : {};
+      switch (act.dataset.lb) {
+        case 'close': hide(); break;
+        case 'prev': show(cur - 1); break;
+        case 'next': show(cur + 1); break;
+        case 'copy': copyText(d.url, 'Link'); break;
+        case 'copyfull': copyText(d.full, 'Full URL'); break;
+        case 'delete':
+          boxes().forEach((b) => { b.checked = b.value === d.rel; });
+          syncSelection();
+          if (delForm.requestSubmit) delForm.requestSubmit(); else delForm.submit();
+          break;
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (lb.hidden) return;
+      if (e.key === 'Escape') hide();
+      if (e.key === 'ArrowLeft') show(cur - 1);
+      if (e.key === 'ArrowRight') show(cur + 1);
+    });
+  }
+
+  // ======================================================================
   // POST EDITOR
   // ======================================================================
   const form = $('#pbPostForm');

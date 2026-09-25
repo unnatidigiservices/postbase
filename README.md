@@ -56,6 +56,9 @@ Nothing in it depends on GeoRank, though. It runs just as well beside any PHP we
 - 📄 **Pages and a featured post.**
   - Pages (About, Contact, Support…) use the same editor with clean URLs, and stay out of the post list.
   - Pin a post to feature it at the top of the blog home.
+- 🏠 **Static homepage.** Make any Page your homepage; the post list moves to `/posts/` automatically, with SEO-safe redirects.
+- 🖼️ **Media Manager.** A thumbnail library of every image, with a popup preview, one-click copy link, "used in" tracking and multi-select delete.
+- 🧰 **Custom header and footer code.** Add site-verification tags, analytics or chat widgets to every page from Settings → Code.
 - ⏰ **Scheduled posts.** Publish with a future date and the post goes live on its own.
 - 📱 **Fast and mobile-first.**
   - No JavaScript framework on public pages.

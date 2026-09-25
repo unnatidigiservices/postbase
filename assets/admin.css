@@ -236,6 +236,47 @@ input[readonly], textarea[readonly] { background: var(--pb-surface-2); }
 .pb-addon-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pb-addon p { margin: 6px 0; }
 .pb-addon-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 4px 18px; align-items: start; margin-bottom: 12px; }
+/* Media manager */
+.pb-media-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.pb-media-search { display: flex; gap: 6px; flex: 1 1 260px; }
+.pb-media-search input { margin: 0; }
+.pb-media-all { margin: 0; }
+.pb-media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.pb-media-item { position: relative; margin: 0; background: var(--pb-surface); border: 1px solid var(--pb-border); border-radius: 10px; overflow: hidden; }
+.pb-media-item.is-selected { border-color: var(--pb-accent); box-shadow: 0 0 0 2px var(--pb-accent); }
+.pb-media-thumb { display: block; width: 100%; padding: 0; border: 0; background: var(--pb-surface-2); cursor: zoom-in; aspect-ratio: 1 / 1; }
+.pb-media-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pb-media-thumb:focus-visible { outline: 3px solid var(--pb-accent); outline-offset: -3px; }
+.pb-media-check { position: absolute; top: 6px; left: 6px; z-index: 2; background: rgba(255, 255, 255, .92); border-radius: 6px; padding: 3px 5px; line-height: 0; cursor: pointer; margin: 0; }
+.pb-media-check input { width: 18px; height: 18px; margin: 0; cursor: pointer; }
+.pb-media-item figcaption { padding: 7px 9px; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.pb-media-name { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pb-media-inuse { color: var(--pb-ok); font-weight: 600; }
+.pb-media-pager { margin-top: 16px; }
+.pb-lightbox { position: fixed; inset: 0; z-index: 60; background: rgba(8, 12, 28, .82); display: grid; place-items: center; padding: 20px; }
+.pb-lightbox[hidden] { display: none; }
+.pb-lightbox-inner { position: relative; background: var(--pb-surface); border-radius: 14px; width: min(1100px, 100%); max-height: calc(100vh - 40px); display: grid; grid-template-columns: minmax(0, 1fr) 320px; overflow: hidden; }
+.pb-lightbox-img { background: #0b0f1c; display: grid; place-items: center; min-height: 320px; }
+.pb-lightbox-img img { max-width: 100%; max-height: calc(100vh - 40px); object-fit: contain; display: block; }
+.pb-lightbox-info { padding: 20px; overflow: auto; }
+.pb-lightbox-info ul { margin: 6px 0 12px; padding-left: 18px; }
+.pb-copy-row { flex-wrap: nowrap; gap: 6px; align-items: center; margin-top: 4px; }
+.pb-copy-row input { margin: 0; font-size: 12.5px; font-family: ui-monospace, Consolas, monospace; }
+.pb-lightbox-close { position: absolute; top: 10px; right: 10px; z-index: 3; width: 36px; height: 36px; border-radius: 50%; border: 0; background: var(--pb-surface); color: var(--pb-text); font-size: 16px; cursor: pointer; box-shadow: var(--pb-shadow); }
+.pb-lightbox-nav { position: absolute; top: 50%; transform: translateY(-50%); z-index: 3; width: 44px; height: 44px; border-radius: 50%; border: 0; background: rgba(255, 255, 255, .9); color: #0f1b3d; font-size: 28px; line-height: 1; cursor: pointer; }
+.pb-lightbox-prev { left: 12px; }
+.pb-lightbox-next { right: 332px; }
+.pb-lightbox-nav:disabled { opacity: .25; cursor: default; }
+body.pb-noscroll { overflow: hidden; }
+.pb-code { font: 13px/1.5 ui-monospace, Consolas, monospace; }
+@media (max-width: 760px) {
+  .pb-lightbox { padding: 0; }
+  .pb-lightbox-inner { grid-template-columns: 1fr; max-height: 100vh; height: 100%; border-radius: 0; overflow: auto; }
+  .pb-lightbox-img img { max-height: 60vh; }
+  .pb-lightbox-next { right: 12px; }
+  .pb-lightbox-nav { top: 30vh; }
+  .pb-media-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+}
 .pb-toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 50; max-width: min(560px, calc(100vw - 32px)); background: #0f1b3d; color: #fff; padding: 11px 18px; border-radius: 12px; font-size: 14px; font-weight: 550; box-shadow: 0 10px 30px rgba(0, 0, 0, .25); }
 .pb-toast-error { background: #7f1d1d; }
 

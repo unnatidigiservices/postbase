@@ -183,6 +183,21 @@ if ($isPost) {
         $r = pb_handle_upload($_FILES['file'] ?? null);
         pb_json($r, isset($r['error']) ? 400 : 200);
     }
+    if ($do === 'code_save' && pb_can($user, 'settings.manage')) {
+        pb_settings_save([
+            'code_head' => substr(str_replace("\r\n", "\n", (string) ($_POST['code_head'] ?? '')), 0, 20000),
+            'code_footer' => substr(str_replace("\r\n", "\n", (string) ($_POST['code_footer'] ?? '')), 0, 20000),
+        ]);
+        pb_flash('Code saved. It is now on every public page.');
+        pb_redirect('view=settings&tab=code');
+    }
+    if ($do === 'media_delete') {
+        if (!pb_can($user, 'media.delete')) { pb_flash('Only Editors and Admins can delete images.', 'error'); pb_redirect('view=media'); }
+        $paths = is_array($_POST['paths'] ?? null) ? array_map('strval', $_POST['paths']) : [];
+        [$deleted, $skipped] = pb_media_delete($paths);
+        pb_flash('Deleted ' . $deleted . ' image' . ($deleted === 1 ? '' : 's') . '.' . ($skipped ? ' ' . $skipped . ' could not be deleted.' : ''), $skipped && !$deleted ? 'error' : 'ok');
+        pb_redirect('view=media' . (!empty($_POST['back']) ? '&' . preg_replace('/[^a-z0-9=&_%-]/i', '', (string) $_POST['back']) : ''));
+    }
     if ($do === 'import_image') { // images pasted from Docs/WordPress/web pages -> our uploads
         if (!pb_can($user, 'media.upload')) pb_json(['error' => 'Not allowed.'], 403);
         $r = pb_import_remote_image((string) ($_POST['url'] ?? ''));
@@ -298,6 +313,11 @@ if ($isPost) {
             'show_author' => !empty($_POST['show_author']) ? '1' : '0',
             'georank_sso' => !empty($_POST['georank_sso']) ? '1' : '0',
             'georank_editor_role' => in_array($_POST['georank_editor_role'] ?? '', PB_ROLES, true) ? $_POST['georank_editor_role'] : 'editor',
+            // Homepage: '' (latest posts) or the id of a published Page.
+            'front_page' => (function ($id) {
+                $p = $id ? pb_post_by_id($id) : null;
+                return $p && $p['type'] === 'page' && pb_post_is_public($p) ? (string) $id : '';
+            })((int) ($_POST['front_page'] ?? 0)),
         ]);
         pb_flash('Settings saved.');
         pb_redirect('view=settings');
@@ -661,10 +681,10 @@ if ($view === 'edit') {
 } elseif ($view === 'settings' && pb_can($user, 'settings.manage')) {
     $title = 'Settings';
     $s = function ($k) { return pb_setting($k); };
-    $stab = in_array($_GET['tab'] ?? '', ['general', 'design', 'navigation', 'addons'], true) ? $_GET['tab'] : 'general';
+    $stab = in_array($_GET['tab'] ?? '', ['general', 'design', 'navigation', 'code', 'addons'], true) ? $_GET['tab'] : 'general';
     $isGr = pb_is_georank_site(); ?>
 <div class="pb-tabs">
-  <?php foreach (['general' => 'General', 'design' => 'Design', 'navigation' => 'Navigation', 'addons' => 'Addons'] as $k => $label): ?>
+  <?php foreach (['general' => 'General', 'design' => 'Design', 'navigation' => 'Navigation', 'code' => 'Code', 'addons' => 'Addons'] as $k => $label): ?>
     <a href="<?= pb_e(pb_admin_url('view=settings&tab=' . $k)) ?>" class="<?= $k === $stab ? 'active' : '' ?>"><?= pb_e($label) ?></a>
   <?php endforeach; ?>
 </div>
@@ -713,6 +733,24 @@ if ($view === 'edit') {
       <span class="pbp-btn">Search</span>
     </div>
     <p class="pb-small pb-muted"><?= $isGr ? 'Empty values follow your GeoRank theme (Design tab), so the blog keeps matching the site.' : 'Empty values use the PostBase defaults.' ?></p>
+  </div>
+</div>
+<?php elseif ($stab === 'code'): ?>
+<div class="pb-two-col">
+  <form method="post" class="pb-card">
+    <?= pb_csrf_field() ?><input type="hidden" name="do" value="code_save">
+    <label>Header code <span class="pb-small pb-muted">— added inside <code>&lt;head&gt;</code> on every public page</span>
+      <textarea name="code_head" rows="9" class="pb-code" spellcheck="false" placeholder="<meta name=&quot;google-site-verification&quot; content=&quot;…&quot;>"><?= pb_e($s('code_head')) ?></textarea></label>
+    <label>Footer code <span class="pb-small pb-muted">— added just before <code>&lt;/body&gt;</code> on every public page</span>
+      <textarea name="code_footer" rows="9" class="pb-code" spellcheck="false" placeholder="<script>…analytics or chat widget…</script>"><?= pb_e($s('code_footer')) ?></textarea></label>
+    <button class="pb-btn pb-btn-primary">Save code</button>
+  </form>
+  <div class="pb-card">
+    <h3 class="pb-h3">What goes here</h3>
+    <p class="pb-small"><strong>Header:</strong> site-verification tags (Google Search Console, Bing, Pinterest, Facebook), Google Analytics / Tag Manager, Microsoft Clarity, fonts or pixels that must load early.</p>
+    <p class="pb-small"><strong>Footer:</strong> chat widgets, heatmaps and scripts that can load after the page.</p>
+    <p class="pb-small pb-muted">Code is printed exactly as entered, so only paste code from services you trust. Only Admins can see or change this page. It never runs in the admin area, so a broken snippet can't lock you out.</p>
+    <?php if ($isGr): ?><div class="pb-note pb-note-info pb-small">This is a GeoRank site: blog pages already include the code from <strong>GeoRank → Site Settings</strong> (meta-global). Add a snippet here only if it should run <em>on the blog alone</em>, or it will load twice.</div><?php endif; ?>
   </div>
 </div>
 <?php elseif ($stab === 'addons'):
@@ -849,6 +887,12 @@ if ($view === 'edit') {
     <label>Timezone<input name="timezone" value="<?= pb_e($s('timezone')) ?>" list="pbTz"></label>
     <datalist id="pbTz"><?php foreach (['Asia/Kolkata', 'UTC', 'Asia/Dubai', 'Asia/Singapore', 'Europe/London', 'America/New_York', 'America/Los_Angeles', 'Australia/Sydney'] as $tz): ?><option value="<?= $tz ?>"><?php endforeach; ?></datalist>
     <label class="pb-check"><input type="checkbox" name="show_author" value="1"<?= $s('show_author') === '1' ? ' checked' : '' ?>> Show author name on posts</label>
+    <?php $pubPages = pb_all("SELECT id, title FROM posts WHERE type = 'page' AND status = 'published' AND published_at <= ? ORDER BY title", [pb_now()]); ?>
+    <label>Homepage shows<select name="front_page">
+      <option value="">Latest posts</option>
+      <?php foreach ($pubPages as $pg): ?><option value="<?= (int) $pg['id'] ?>"<?= (string) $s('front_page') === (string) $pg['id'] ? ' selected' : '' ?>>Page: <?= pb_e($pg['title']) ?></option><?php endforeach; ?>
+    </select>
+    <span class="pb-small pb-muted"><?= $pubPages ? 'With a page as the homepage, the post list moves to <code>' . pb_e(pb_url('posts') === pb_url('home') ? PB_BASE_PATH . '/posts/' : pb_url('posts')) . '</code> and the page\'s own address redirects to the homepage.' : 'Publish a Page (Pages → New page) to use it as the homepage.' ?></span></label>
 
     <h3 class="pb-h3">Layout &amp; URLs</h3>
     <label>Layout<select name="layout">
@@ -887,6 +931,73 @@ if ($view === 'edit') {
   </div>
 </div>
 <?php endif;
+
+} elseif ($view === 'media') {
+    $title = 'Media';
+    $mq = trim((string) ($_GET['q'] ?? ''));
+    $all = pb_media_list($mq);
+    $per = 60;
+    $pagesN = max(1, (int) ceil(count($all) / $per));
+    $pageN = min(max(1, (int) ($_GET['pg'] ?? 1)), $pagesN);
+    $items = array_slice($all, ($pageN - 1) * $per, $per);
+    $usage = pb_media_usage(array_column($items, 'url'));
+    $canDel = pb_can($user, 'media.delete');
+    $back = http_build_query(array_filter(['q' => $mq, 'pg' => $pageN > 1 ? $pageN : null])); ?>
+<div class="pb-card pb-media-bar">
+  <form method="get" class="pb-media-search" role="search">
+    <input type="hidden" name="view" value="media">
+    <input type="search" name="q" value="<?= pb_e($mq) ?>" placeholder="Search file names…" aria-label="Search images">
+    <button class="pb-btn pb-btn-sm">Search</button>
+  </form>
+  <button type="button" class="pb-btn pb-btn-primary pb-btn-sm" id="pbMediaUploadBtn">⬆ Upload images</button>
+  <input type="file" id="pbMediaFiles" accept="image/jpeg,image/png,image/gif,image/webp" multiple hidden>
+  <span class="pb-small pb-muted"><?= count($all) ?> image<?= count($all) === 1 ? '' : 's' ?><?= $mq !== '' ? ' matching “' . pb_e($mq) . '”' : '' ?></span>
+  <?php if ($canDel && $items): ?>
+    <label class="pb-check pb-small pb-media-all"><input type="checkbox" id="pbMediaAll"> Select all</label>
+    <button type="submit" form="pbMediaDelete" class="pb-btn pb-btn-sm pb-btn-danger" id="pbMediaDeleteBtn" disabled>Delete selected (<span>0</span>)</button>
+  <?php endif; ?>
+</div>
+<?php if (!$items): ?>
+  <div class="pb-card pb-empty-admin"><p><?= $mq !== '' ? 'No images match that search.' : 'No images yet. Upload some, or paste/insert images while writing a post.' ?></p></div>
+<?php else: ?>
+<form method="post" id="pbMediaDelete">
+  <?= pb_csrf_field() ?><input type="hidden" name="do" value="media_delete"><input type="hidden" name="back" value="<?= pb_e($back) ?>">
+  <div class="pb-media-grid" id="pbMedia">
+  <?php foreach ($items as $i => $m): $used = $usage[$m['url']] ?? []; ?>
+    <figure class="pb-media-item" data-index="<?= $i ?>" data-url="<?= pb_e($m['url']) ?>" data-full="<?= pb_e(pb_abs_url($m['url'])) ?>"
+            data-name="<?= pb_e($m['name']) ?>" data-size="<?= pb_e(pb_human_size($m['size'])) ?>" data-date="<?= pb_e(pb_format_date(gmdate('Y-m-d H:i:s', $m['mtime']), 'j M Y, g:i a')) ?>"
+            data-rel="<?= pb_e($m['rel']) ?>" data-used="<?= pb_e(json_encode($used)) ?>">
+      <?php if ($canDel): ?><label class="pb-media-check" title="Select"><input type="checkbox" name="paths[]" value="<?= pb_e($m['rel']) ?>" data-used="<?= count($used) ?>"><span class="pb-sr">Select <?= pb_e($m['name']) ?></span></label><?php endif; ?>
+      <button type="button" class="pb-media-thumb" aria-label="View <?= pb_e($m['name']) ?>"><img src="<?= pb_e($m['url']) ?>" alt="" loading="lazy" decoding="async"></button>
+      <figcaption><span class="pb-media-name" title="<?= pb_e($m['rel']) ?>"><?= pb_e($m['name']) ?></span>
+        <span class="pb-small pb-muted"><?= pb_e(pb_human_size($m['size'])) ?><?= $used ? ' · <span class="pb-media-inuse">in use</span>' : '' ?></span></figcaption>
+    </figure>
+  <?php endforeach; ?>
+  </div>
+</form>
+<?php if ($pagesN > 1): ?>
+  <nav class="pb-tabs pb-media-pager" aria-label="Pages">
+    <?php for ($n = 1; $n <= $pagesN; $n++): ?><a href="<?= pb_e(pb_admin_url('view=media&pg=' . $n . ($mq !== '' ? '&q=' . rawurlencode($mq) : ''))) ?>" class="<?= $n === $pageN ? 'active' : '' ?>"><?= $n ?></a><?php endfor; ?>
+  </nav>
+<?php endif; ?>
+<div class="pb-lightbox" id="pbLightbox" hidden role="dialog" aria-modal="true" aria-label="Image details">
+  <div class="pb-lightbox-inner">
+    <button type="button" class="pb-lightbox-close" data-lb="close" aria-label="Close">✕</button>
+    <button type="button" class="pb-lightbox-nav pb-lightbox-prev" data-lb="prev" aria-label="Previous image">‹</button>
+    <button type="button" class="pb-lightbox-nav pb-lightbox-next" data-lb="next" aria-label="Next image">›</button>
+    <div class="pb-lightbox-img"><img alt="" id="pbLbImg"></div>
+    <div class="pb-lightbox-info">
+      <h3 class="pb-h3" id="pbLbName"></h3>
+      <p class="pb-small pb-muted" id="pbLbMeta"></p>
+      <label class="pb-small">Link (use in posts)<div class="pb-row pb-copy-row"><input id="pbLbUrl" readonly><button type="button" class="pb-btn pb-btn-sm pb-btn-primary" data-lb="copy">Copy link</button></div></label>
+      <label class="pb-small">Full URL<div class="pb-row pb-copy-row"><input id="pbLbFull" readonly><button type="button" class="pb-btn pb-btn-sm" data-lb="copyfull">Copy</button></div></label>
+      <div id="pbLbUsed" class="pb-small"></div>
+      <?php if ($canDel): ?><button type="button" class="pb-btn pb-btn-sm pb-btn-danger" data-lb="delete">Delete image</button><?php endif; ?>
+    </div>
+  </div>
+</div>
+<?php endif; ?>
+<?php
 
 } elseif ($view === 'account') {
     $title = 'My account'; ?>
@@ -982,6 +1093,7 @@ $nav = [
     ['edit', 'Write', '✏️', true],
     ['posts', $isEditor ? 'Posts' : 'My posts', '📄', true],
     ['pages', 'Pages', '📑', $isEditor],
+    ['media', 'Media', '🖼️', true],
     ['categories', 'Categories', '🏷️', $isEditor],
     ['users', 'Users', '👥', pb_can($user, 'user.manage')],
     ['settings', 'Settings', '⚙️', pb_can($user, 'settings.manage')],
@@ -1031,7 +1143,7 @@ $nav = [
     <footer class="pb-admin-foot">Unnati PostBase <?= pb_e(PB_VERSION) ?> · <a href="<?= PB_HOMEPAGE ?>" target="_blank" rel="noopener">Help &amp; support</a> · <a href="<?= PB_REPO_URL ?>" target="_blank" rel="noopener">GitHub</a></footer>
   </div>
 </div>
-<script>window.PB = <?= json_encode(['csrf' => pb_csrf_token(), 'endpoint' => pb_admin_url(), 'maxMb' => pb_config('max_upload_mb')]) ?>;</script>
+<script>window.PB = <?= json_encode(['csrf' => pb_csrf_token(), 'endpoint' => pb_admin_url(), 'maxMb' => pb_config('max_upload_mb'), 'adminUrl' => pb_admin_url()]) ?>;</script>
 <script src="<?= pb_e(PB_BASE_PATH) ?>/assets/paste.js?v=<?= pb_e(PB_VERSION) ?>"></script>
 <script src="<?= pb_e(PB_BASE_PATH) ?>/assets/admin.js?v=<?= pb_e(PB_VERSION) ?>"></script>
 </body>
@@ -1056,7 +1168,7 @@ function pb_auth_page($heading, $error, callable $body) {
 <body class="pb-admin pb-auth">
   <div class="pb-auth-box">
     <div class="pb-logo pb-logo-lg" role="img" aria-label="Unnati PostBase"><img src="<?= pb_e(PB_BASE_PATH) ?>/assets/apple-touch-icon.png" alt="" width="64" height="64"><img class="pb-wordmark-img" src="<?= pb_e(PB_BASE_PATH) ?>/assets/logo-wordmark.svg" alt="PostBase" height="48"></div>
-    <p class="pb-tagline">Write simple, post fast</p>
+    <p class="pb-tagline">Write anywhere, post here.</p>
     <div class="pb-card">
       <h1 class="pb-h2"><?= pb_e($heading) ?></h1>
       <?php if ($error): ?><div class="pb-flash pb-flash-error"><?= pb_e($error) ?></div><?php endif; ?>

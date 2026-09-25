@@ -121,6 +121,11 @@ function pb_render_page(array $meta, $content) {
     $tail .= $meta['head'] ?? '';
     $tail .= pb_capture_action('pb_head', $meta);       // plugins: extra <head> tags
     $bodyEnd = pb_capture_action('pb_body_end', $meta); // plugins: scripts before </body>
+    // Settings → Code (Admin only, printed as entered): verification tags, analytics, chat widgets…
+    $codeHead = trim((string) pb_setting('code_head'));
+    $codeFooter = trim((string) pb_setting('code_footer'));
+    if ($codeHead !== '') $tail .= "<!-- PostBase: custom head code -->\n" . $codeHead . "\n";
+    if ($codeFooter !== '') $bodyEnd .= "<!-- PostBase: custom footer code -->\n" . $codeFooter . "\n";
 
     header('Content-Type: text/html; charset=utf-8');
     if (pb_layout_mode() === 'georank') {
@@ -155,11 +160,13 @@ function pb_render_page(array $meta, $content) {
             'content' => $content,                   // the list/post/page HTML
             'nav' => pb_nav_items(),                 // [['label','url','new_tab'], ...]
             'blog_title' => (string) pb_setting('blog_title'),
-            'blog_url' => pb_url(),
+            'blog_url' => pb_url(),                  // the homepage
+            'posts_url' => pb_url('posts'),          // the post list (differs when a Page is the homepage)
             'site_url' => pb_site_base_path() . '/',
             'feed_url' => pb_url('feed'),
             'favicon' => $favicon,
             'theme_url' => $theme['url'],
+            'theme_version' => $theme['version'],   // for cache-busting your own assets
             'settings' => pb_addon_settings($theme['slug']),
             'year' => date('Y'),
             'powered_by' => 'Powered by <a href="' . PB_HOMEPAGE . '" rel="noopener">Unnati PostBase</a>',

@@ -71,8 +71,8 @@ return function (array $page) { ?>
 | `content` | The page body (post list, post, page, 404…). Uses the standard `pb-` classes from `assets/blog.css`, so style or override those. |
 | `body_end` | Plugin scripts. **Print it just before `</body>`.** |
 | `nav` | Menu items from Settings → Navigation (`label`, `url`, `new_tab`). `pb_nav_html($class)` renders them with the current page marked. |
-| `blog_title`, `blog_url`, `site_url`, `feed_url`, `favicon`, `year`, `lang` | Site basics. |
-| `theme_url` | URL of your addon folder, for your own assets. |
+| `blog_title`, `blog_url` (the homepage), `posts_url` (the post list: same as `blog_url`, or `/posts/` when a Page is the homepage), `site_url`, `feed_url`, `favicon`, `year`, `lang` | Site basics. Point search forms at `posts_url`. |
+| `theme_url`, `theme_version` | URL of your addon folder and your addon.json version, for your own assets (`theme.js?v=...`). |
 | `settings` | Your theme's settings, defaults included. |
 | `powered_by` | The "Powered by Unnati PostBase" link (HTML). |
 

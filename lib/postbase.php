@@ -10,7 +10,7 @@
  */
 if (!defined('PB_ROOT')) { http_response_code(403); exit; }
 
-define('PB_VERSION', '0.13.0');
+define('PB_VERSION', '0.14.0');
 define('PB_HOMEPAGE', 'https://postbase.top');                             // project info, docs and support
 define('PB_REPO_URL', 'https://github.com/unnatidigiservices/postbase');    // source code and issues
 define('PB_SCHEMA_VERSION', 2);
@@ -22,7 +22,7 @@ define('PB_SITE_DIR', PB_BASE_PATH === '' ? PB_ROOT : dirname(PB_ROOT, substr_co
 define('PB_SESSION_LIFETIME', 12 * 60 * 60); // matches GeoRank so a shared session is never cut short
 define('PB_ROLES', ['contributor', 'editor', 'admin']);
 define('PB_STATUSES', ['draft', 'pending', 'changes_requested', 'published', 'archived']);
-define('PB_RESERVED_SLUGS', ['admin', 'assets', 'data', 'lib', 'uploads', 'tools', 'docs', 'page', 'category', 'feed', 'feed.xml', 'sitemap.xml', 'robots.txt', 'search', 'index.php']);
+define('PB_RESERVED_SLUGS', ['admin', 'assets', 'data', 'lib', 'uploads', 'tools', 'docs', 'page', 'category', 'feed', 'feed.xml', 'sitemap.xml', 'robots.txt', 'search', 'index.php', 'posts', 'addons']);
 
 // ----------------------------------------------------------------------------
 // CONFIG — optional config.php (see config.sample.php) overrides these.
@@ -341,6 +341,11 @@ function pb_settings_defaults() {
         // Settings → Addons. Active theme slug ('' = built-in default) and active plugins (JSON list).
         'theme'               => '',
         'plugins'             => '[]',
+        // Settings → General: a published Page as the homepage ('' = latest posts).
+        'front_page'          => '',
+        // Settings → Code: raw HTML/JS added to every public page (Admin only).
+        'code_head'           => '',
+        'code_footer'         => '',
     ];
 }
 
@@ -369,14 +374,14 @@ function pb_valid_hex($v) {
 function pb_nav_defaults() {
     $site = pb_site_base_path();
     if (PB_BASE_PATH === '') { // blog is the whole site: no separate home or contact page
-        return [
-            ['label' => 'Home', 'url' => '/', 'new_tab' => false],
-            ['label' => 'RSS', 'url' => pb_url('feed'), 'new_tab' => false],
-        ];
+        $items = [['label' => 'Home', 'url' => '/', 'new_tab' => false]];
+        if (pb_front_page()) $items[] = ['label' => 'Blog', 'url' => pb_url('posts'), 'new_tab' => false];
+        $items[] = ['label' => 'RSS', 'url' => pb_url('feed'), 'new_tab' => false];
+        return $items;
     }
     return [
         ['label' => 'Home', 'url' => $site . '/', 'new_tab' => false],
-        ['label' => 'Blog', 'url' => PB_BASE_PATH . '/', 'new_tab' => false],
+        ['label' => 'Blog', 'url' => pb_url('posts'), 'new_tab' => false],
         ['label' => 'Contact', 'url' => $site . '/contact.html', 'new_tab' => false],
     ];
 }
@@ -538,6 +543,7 @@ function pb_can($user, $perm, $post = null) {
         case 'post.delete':
             return $role === 'admin' || ($own && $status === 'draft' && empty($post['first_published_at']));
         case 'category.manage':
+        case 'media.delete':
             return $isEditor;
         case 'user.manage':
         case 'settings.manage':
@@ -973,12 +979,28 @@ function pb_import_remote_image($url) {
 // URLS — pretty (/blog/my-post/) when mod_rewrite is available, query-string
 // fallback (/blog/?p=my-post) otherwise. Toggle in Settings.
 // ----------------------------------------------------------------------------
+// The published Page chosen as the homepage (Settings → General), or null when
+// the homepage is the latest-posts list. An unpublished/deleted page falls back.
+function pb_front_page() {
+    static $cache = false;
+    if ($cache !== false) return $cache;
+    $id = (int) pb_setting('front_page');
+    $p = $id ? pb_post_by_id($id) : null;
+    $cache = $p && $p['type'] === 'page' && pb_post_is_public($p) ? $p : null;
+    return $cache;
+}
 function pb_url($type = 'home', $arg = null, $page = 1) {
     $pretty = pb_setting('pretty_urls') === '1';
     $b = PB_BASE_PATH . '/';
     switch ($type) {
         case 'post':
+            $front = pb_front_page();
+            if ($front && $front['slug'] === $arg) return $b; // the homepage page lives at the root
             return $pretty ? $b . rawurlencode($arg) . '/' : $b . '?p=' . rawurlencode($arg);
+        case 'posts': // the post list: the homepage, or /posts/ when a Page is the homepage
+            if (!pb_front_page()) return pb_url('home', null, $page);
+            if ($pretty) return $b . 'posts/' . ($page > 1 ? 'page/' . (int) $page . '/' : '');
+            return $b . '?list=1' . ($page > 1 ? '&page=' . (int) $page : '');
         case 'category':
             $u = $pretty ? $b . 'category/' . rawurlencode($arg) . '/' : $b . '?c=' . rawurlencode($arg);
             if ($page > 1) $u .= $pretty ? 'page/' . (int) $page . '/' : '&page=' . (int) $page;
@@ -1012,6 +1034,7 @@ function pb_layout_mode() {
     return pb_is_georank_site() ? 'georank' : 'standalone';
 }
 require __DIR__ . '/addons.php';
+require __DIR__ . '/media.php';
 
 // Adds "Sitemap: <blog sitemap>" to the site's robots.txt, outside GeoRank's
 // managed marker block so a GeoRank robots regeneration never removes it.

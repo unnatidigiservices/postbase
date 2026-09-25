@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.14.0 — 2026-09-25
+
+**Tagline: "Write anywhere, post here."**
+
+- **Static homepage.** Settings → General → *Homepage shows*: latest posts, or any published Page.
+  - With a Page as the homepage, the post list moves to `/posts/` (`?list=1` without clean URLs).
+  - The page's own address and the old `/page/N/` list URLs redirect with a 301, so search engines see one address per page.
+  - The sitemap, navigation defaults, breadcrumbs, search and "All posts" links follow automatically.
+  - If the chosen page is unpublished, the homepage falls back to the post list.
+- **Media Manager** (sidebar → Media):
+  - A thumbnail grid of every image in `uploads/`, with filename search, multi-file upload and 60 images per page.
+  - Click an image for a popup with a large preview, dimensions, size and date. It has **Copy link** (for posts) and **Copy full URL**, a "Used in" list linking to each post/page/setting, previous/next (arrow keys) and Esc to close.
+  - **Multi-select delete** (Editors and Admins) warns when selected images are still in use. Deletion is confined to image files inside `uploads/`, so path tricks are refused.
+- **Settings → Code** (Admin only): header code (inside `<head>`) and footer code (before `</body>`) on every public page, for site verification, analytics and chat widgets. It works with every layout and theme and never runs in the admin area.
+- Themes receive `posts_url` (the post list address). M1 1.0.1 searches it.
+
 ## 0.13.0 — 2026-09-24
 
 - **Addons: themes and plugins.** Addons live in `addons/<slug>/` with an `addon.json`. Settings → Addons activates them and renders each addon's settings form (text, textarea, url, image upload, colour, select, checkbox and number fields, validated by type).

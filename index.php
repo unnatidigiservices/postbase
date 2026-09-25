@@ -51,6 +51,10 @@ if (isset($_GET['feed'])) {
         $view = 'sitemap';
     } elseif ($parts[0] === 'page' && isset($parts[1]) && ctype_digit($parts[1]) && count($parts) === 2) {
         $page = max(1, (int) $parts[1]);
+        $view = 'list';
+    } elseif ($parts[0] === 'posts' && (count($parts) === 1 || (count($parts) === 3 && $parts[1] === 'page' && ctype_digit($parts[2])))) {
+        $view = 'list'; // the post list when a Page is the homepage
+        if (count($parts) === 3) $page = max(1, (int) $parts[2]);
     } elseif ($parts[0] === 'category' && isset($parts[1])) {
         $view = 'category';
         $slug = $parts[1];
@@ -63,6 +67,26 @@ if (isset($_GET['feed'])) {
         $view = 'notfound';
     }
 }
+
+// Homepage: a static Page (Settings → General) or the latest posts.
+$front = pb_front_page();
+if ($view === 'home' && !empty($_GET['list'])) $view = 'list';
+if ($view === 'home' && $front && $page === 1 && trim((string) ($_GET['q'] ?? '')) === '') {
+    $view = 'post';
+    $slug = $front['slug'];
+    $isFront = true;
+}
+// One address per page: the list's old/extra URLs and the homepage Page's own slug redirect.
+$redirect = null;
+if ($view === 'list' && !$front && $route !== '' && strpos($route, 'posts') === 0) $redirect = pb_url('home', null, $page);
+if ($view === 'list' && $front && strpos($route, 'page/') === 0) $redirect = pb_url('posts', null, $page);
+if ($view === 'home' && $front && ($page > 1 || trim((string) ($_GET['q'] ?? '')) !== '')) $view = 'list';
+if ($view === 'post' && empty($isFront) && $front && $slug === $front['slug']) $redirect = pb_url('home');
+if ($redirect !== null) {
+    header('Location: ' . $redirect, true, 301);
+    exit;
+}
+if ($view === 'list') $view = 'home'; // same listing code below
 
 $now = pb_now();
 $publicWhere = "p.status = 'published' AND p.published_at <= :now";
@@ -113,7 +137,9 @@ if ($view === 'sitemap') {
     echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n" . '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
     $last = $posts ? max(array_column($posts, 'updated_at')) : pb_now();
     echo '<url><loc>' . pb_e(pb_abs_url(pb_url())) . '</loc><lastmod>' . substr($last, 0, 10) . "</lastmod></url>\n";
+    if ($front) echo '<url><loc>' . pb_e(pb_abs_url(pb_url('posts'))) . '</loc><lastmod>' . substr($last, 0, 10) . "</lastmod></url>\n";
     foreach ($posts as $p) {
+        if ($front && $p['slug'] === $front['slug']) continue; // already listed as the homepage
         $mod = max($p['updated_at'], $p['published_at']);
         echo '<url><loc>' . pb_e(pb_abs_url(pb_url('post', $p['slug']))) . '</loc><lastmod>' . substr($mod, 0, 10) . "</lastmod></url>\n";
     }
@@ -191,7 +217,7 @@ if ($view === 'post') {
   <div class="pb-preview-bar">Preview &middot; <?= pb_e(pb_status_label($post['status'], $post['published_at'])) ?> &middot; not visible to the public.
     <a href="<?= pb_e(pb_url('admin', 'view=edit&id=' . (int) $post['id'])) ?>">Back to editor</a></div>
 <?php endif; ?>
-  <nav class="pb-crumbs" aria-label="Breadcrumb"><a href="<?= pb_e(pb_url()) ?>"><?= pb_e(pb_setting('blog_title')) ?></a>
+  <nav class="pb-crumbs" aria-label="Breadcrumb"><a href="<?= pb_e(pb_url('posts')) ?>"><?= pb_e(pb_setting('blog_title')) ?></a>
 <?php if ($post['category_name']): ?> <span aria-hidden="true">/</span> <a href="<?= pb_e(pb_url('category', $post['category_slug'])) ?>"><?= pb_e($post['category_name']) ?></a><?php endif; ?>
   </nav>
   <article class="pb-article">
@@ -215,7 +241,7 @@ if ($view === 'post') {
     <?php if ($prev): ?><a class="pb-prev" href="<?= pb_e(pb_url('post', $prev['slug'])) ?>"><small>Older</small><?= pb_e($prev['title']) ?></a><?php endif; ?>
   </nav>
 <?php endif; ?>
-  <p class="pb-back"><a href="<?= pb_e(pb_url()) ?>">&larr; All posts</a></p>
+  <p class="pb-back"><a href="<?= pb_e(pb_url('posts')) ?>">&larr; All posts</a></p>
 </div>
 <?php
         $content = ob_get_clean();
@@ -241,7 +267,7 @@ if ($view === 'notfound') {
     http_response_code(404);
     pb_render_page(['title' => 'Not found | ' . pb_setting('blog_title'), 'noindex' => true],
         '<div class="pb-wrap pb-empty"><h1>Post not found</h1><p>It may have moved or been unpublished.</p>'
-        . '<p><a class="pb-btn" href="' . pb_e(pb_url()) . '">Browse all posts</a></p></div>');
+        . '<p><a class="pb-btn" href="' . pb_e(pb_url('posts')) . '">Browse all posts</a></p></div>');
     exit;
 }
 
@@ -280,14 +306,14 @@ ob_start(); ?>
   <header class="pb-list-head">
     <h1><?= pb_e($heading) ?></h1>
 <?php if ($intro !== ''): ?>    <p class="pb-lead"><?= pb_e($intro) ?></p><?php endif; ?>
-    <form class="pb-search" role="search" method="get" action="<?= pb_e(pb_url()) ?>">
+    <form class="pb-search" role="search" method="get" action="<?= pb_e(pb_url('posts')) ?>"><?php if (pb_front_page() && pb_setting('pretty_urls') !== '1'): ?><input type="hidden" name="list" value="1"><?php endif; ?>
       <label class="pb-sr" for="pb-q">Search posts</label>
       <input id="pb-q" type="search" name="q" value="<?= pb_e($q) ?>" placeholder="Search posts…">
       <button type="submit">Search</button>
     </form>
 <?php if ($cats): ?>
     <nav class="pb-cats" aria-label="Categories">
-      <a href="<?= pb_e(pb_url()) ?>"<?= !$category ? ' aria-current="page"' : '' ?>>All</a>
+      <a href="<?= pb_e(pb_url('posts')) ?>"<?= !$category ? ' aria-current="page"' : '' ?>>All</a>
 <?php foreach ($cats as $c): ?>
       <a href="<?= pb_e(pb_url('category', $c['slug'])) ?>"<?= $category && $category['slug'] === $c['slug'] ? ' aria-current="page"' : '' ?>><?= pb_e($c['name']) ?></a>
 <?php endforeach; ?>
@@ -295,14 +321,14 @@ ob_start(); ?>
 <?php endif; ?>
   </header>
 <?php if ($q !== ''): ?>
-  <p class="pb-meta"><?= $total ?> result<?= $total === 1 ? '' : 's' ?> for &ldquo;<?= pb_e($q) ?>&rdquo; &middot; <a href="<?= pb_e(pb_url()) ?>">Clear</a></p>
+  <p class="pb-meta"><?= $total ?> result<?= $total === 1 ? '' : 's' ?> for &ldquo;<?= pb_e($q) ?>&rdquo; &middot; <a href="<?= pb_e(pb_url('posts')) ?>">Clear</a></p>
 <?php endif; ?>
 <?php foreach ($pinned as $p) echo pb_featured_html($p) . "\n"; ?>
 <?php if ($posts): ?>
   <div class="pb-grid">
 <?php foreach ($posts as $p) echo pb_card_html($p) . "\n"; ?>
   </div>
-<?php if ($q === '') echo pb_pagination_html($page, $pages, $category ? 'category' : 'home', $category ? $category['slug'] : null); ?>
+<?php if ($q === '') echo pb_pagination_html($page, $pages, $category ? 'category' : 'posts', $category ? $category['slug'] : null); ?>
 <?php elseif ($pinned): ?>
 <?php else: ?>
   <div class="pb-empty"><p><?= $q !== '' ? 'No posts match your search.' : 'No posts yet. Check back soon.' ?></p></div>
@@ -310,11 +336,11 @@ ob_start(); ?>
 </div>
 <?php
 $content = ob_get_clean();
-$canonical = $category ? pb_abs_url(pb_url('category', $category['slug'], $page)) : pb_abs_url(pb_url('home', null, $page));
+$canonical = $category ? pb_abs_url(pb_url('category', $category['slug'], $page)) : pb_abs_url(pb_url('posts', null, $page));
 pb_render_page([
     'title' => $heading . ($page > 1 ? ' — Page ' . $page : '') . ($category ? ' | ' . pb_setting('blog_title') : ''),
     'description' => $intro,
     'canonical' => $q === '' ? $canonical : '',
     'noindex' => $q !== '',
-    'jsonld' => ['@context' => 'https://schema.org', '@type' => 'Blog', 'name' => pb_setting('blog_title'), 'url' => pb_abs_url(pb_url())],
+    'jsonld' => ['@context' => 'https://schema.org', '@type' => 'Blog', 'name' => pb_setting('blog_title'), 'url' => pb_abs_url(pb_url('posts'))],
 ], $content);
