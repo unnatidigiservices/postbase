@@ -1097,7 +1097,7 @@ $nav = [
     ['categories', 'Categories', '🏷️', $isEditor],
     ['users', 'Users', '👥', pb_can($user, 'user.manage')],
     ['settings', 'Settings', '⚙️', pb_can($user, 'settings.manage')],
-    ['account', 'My account', '🙂', true],
+    ['account', 'My account', '👤', true],
 ];
 ?><!DOCTYPE html>
 <html lang="en">

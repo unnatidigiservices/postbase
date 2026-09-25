@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.14.1 — 2026-09-25
+
+- Media Manager: fixed the screen-reader label ("Select file-name") showing on top of each thumbnail. The admin CSS was missing the visually-hidden `.pb-sr` style. The select checkbox is now a compact box in the corner.
+- My account uses the 👤 icon.
+
 ## 0.14.0 — 2026-09-25
 
 **Tagline: "Write anywhere, post here."**
