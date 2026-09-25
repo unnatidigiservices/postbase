@@ -2,7 +2,7 @@
   <a href="https://postbase.top"><img src="assets/logo.png" width="96" alt=""><br><img src="assets/logo-wordmark.svg" width="360" alt="Unnati PostBase"></a>
 </p>
 
-<p align="center"><strong>Write simple, post fast.</strong><br>
+<p align="center"><strong>Write anywhere, post here.</strong><br>
 A fast, mobile-friendly PHP blogging platform with a real editorial workflow: Contributor → Editor → Admin.</p>
 
 <p align="center">
