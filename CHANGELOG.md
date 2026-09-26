@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.18.0 — 2026-09-26
+
+- **Self-resetting demo mode** for a public "try it" site. Set `demo`, `demo_reset_minutes` and `demo_key` in `config.php` (see the README).
+  - Visitors sign in with one click as Admin, Editor or Contributor. The demo accounts have no usable password.
+  - Every N minutes the database and `uploads/` are restored from a snapshot in `data/demo/`. The restore happens before the database is opened, and a lock ensures only one request does it.
+  - The first visit creates the demo accounts, sample posts (featured, photo, pending review, a Page) and the first snapshot.
+  - Locked for visitors: Settings → Code (it would run for everyone), writing robots.txt, and the demo accounts' passwords, emails, roles and active status.
+  - Public pages are `noindex` and show a "Try the admin →" bar. The admin shows a banner with the time until the next reset.
+  - Settings → Demo (owner, unlocked with `demo_key`): *Save current content as the starting point*, *Reset now*, and *Lock*.
+- **Phones: a scroll hint.** The menu and the editor toolbar scroll sideways on phones. A small animated › at the right edge now shows there's more; it fades out at the end, and tapping it scrolls along.
+- Phones: long pasted links and wide tables no longer widen the editor or the post list. Links wrap, and tables scroll inside themselves.
+- Fixed: the "Read more →" button on the Featured post had blue text on a blue background.
+
 ## 0.17.0 — 2026-09-25
 
 - **"Upgraded automatically" notice.** PostBase can be updated without anyone clicking anything: a hosting panel's Git auto-deploy (e.g. Hostinger), GeoRank's installer, or FTP.

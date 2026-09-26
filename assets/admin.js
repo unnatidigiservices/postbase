@@ -17,6 +17,23 @@
     if (b && !window.confirm(b.getAttribute('data-confirm'))) e.preventDefault();
   });
 
+  // On phones the menu and the editor toolbar scroll sideways, which people
+  // don't expect. A small animated › at the right edge says "more this way";
+  // it fades out once the end is reached, and tapping it scrolls along.
+  $all('.pb-sidebar nav, .pb-toolbar').forEach((box) => {
+    const hint = document.createElement('span');
+    hint.className = 'pb-more';
+    hint.setAttribute('aria-hidden', 'true');
+    hint.textContent = '›';
+    box.appendChild(hint);
+    const update = () => box.classList.toggle('pb-can-scroll', box.scrollWidth - box.clientWidth - box.scrollLeft > 6);
+    box.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    hint.addEventListener('mousedown', (e) => e.preventDefault()); // keep the editor's selection
+    hint.addEventListener('click', () => box.scrollBy({ left: box.clientWidth * 0.6, behavior: 'smooth' }));
+    update();
+  });
+
   // Character counters for SEO fields.
   $all('.pb-count').forEach((c) => {
     const f = document.getElementById(c.dataset.for);

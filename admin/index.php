@@ -194,6 +194,19 @@ if (isset($_GET['logout'])) {
 }
 if (!$user) {
     $err = '';
+    // Demo site: one click to try any role (lib/demo.php).
+    if ($isPost && ($_POST['do'] ?? '') === 'demo_login' && pb_demo_on()) {
+        pb_csrf_check();
+        $role = (string) ($_POST['role'] ?? '');
+        $du = isset(PB_DEMO_USERS[$role]) ? pb_row('SELECT * FROM users WHERE email = ? AND active = 1', [PB_DEMO_USERS[$role][0]]) : null;
+        if ($du) {
+            session_regenerate_id(true);
+            $_SESSION['pb_uid'] = (int) $du['id'];
+            pb_flash('You are in the demo as ' . pb_role_label($du['role']) . '. Try anything: it all resets in ' . pb_demo_minutes_left() . ' min.', 'info');
+            pb_redirect(preg_match('/^view=[a-z]+$/', (string) ($_POST['next'] ?? '')) ? (string) $_POST['next'] : 'view=edit');
+        }
+        $err = 'That demo account is missing. Wait for the next reset, or ask the site owner.';
+    }
     if ($isPost && ($_POST['do'] ?? '') === 'login') {
         pb_csrf_check();
         $err = pb_attempt_login($_POST['email'] ?? '', $_POST['password'] ?? '');
@@ -203,10 +216,21 @@ if (!$user) {
         }
     }
     $gr = pb_georank_admin_url();
-    pb_auth_page('Sign in', $err, function () use ($gr, $view) { ?>
+    pb_auth_page(pb_demo_on() ? 'Try the PostBase demo' : 'Sign in', $err, function () use ($gr, $view) {
+        $next = isset($_GET['view']) && preg_match('/^[a-z]+$/', $view) ? 'view=' . $view : '';
+        if (pb_demo_on()): ?>
+        <p class="pb-muted">Pick a role: no password needed. Everything you do is wiped every <?= pb_demo_minutes() ?> minutes (next reset in <?= pb_demo_minutes_left() ?> min).</p>
+        <div class="pb-demo-roles">
+          <?php foreach (['admin' => 'Everything, including users and settings', 'editor' => 'Writes, reviews and publishes', 'contributor' => 'Writes and submits for review'] as $r => $what): ?>
+          <form method="post"><?= pb_csrf_field() ?><input type="hidden" name="do" value="demo_login"><input type="hidden" name="role" value="<?= $r ?>"><input type="hidden" name="next" value="<?= pb_e($next) ?>">
+            <button class="pb-btn pb-btn-block<?= $r === 'admin' ? ' pb-btn-primary' : '' ?>"><span>Enter as <?= pb_role_label($r) ?></span><small><?= pb_e($what) ?></small></button></form>
+          <?php endforeach; ?>
+        </div>
+        <details class="pb-demo-owner-login"><summary class="pb-small pb-muted">Sign in with email</summary>
+        <?php endif; ?>
         <form method="post" id="pbLogin">
           <?= pb_csrf_field() ?><input type="hidden" name="do" value="login">
-          <input type="hidden" name="next" value="<?= isset($_GET['view']) && preg_match('/^[a-z]+$/', $view) ? 'view=' . pb_e($view) : '' ?>">
+          <input type="hidden" name="next" value="<?= pb_e($next) ?>">
           <label>Email<input type="email" name="email" id="pbLoginEmail" required autofocus value="<?= pb_e($_POST['email'] ?? '') ?>" autocomplete="username" autocapitalize="none" spellcheck="false" inputmode="email"></label>
           <label>Password<input type="password" name="password" id="pbLoginPass" required autocomplete="current-password"></label>
           <label class="pb-check pb-small"><input type="checkbox" name="remember" value="1" checked> Keep me signed in on this device (<?= PB_DEVICE_DAYS ?> days)</label>
@@ -224,6 +248,7 @@ if (!$user) {
           } catch (err) { /* private mode: no storage, nothing to remember */ }
         })();
         </script>
+        <?php if (pb_demo_on()): ?></details><?php endif; ?>
         <?php if ($gr): ?><p class="pb-muted pb-center">Site owner? <a href="<?= pb_e($gr) ?>">Sign in to GeoRank</a> and come back — you'll be signed in here automatically.</p><?php endif;
     });
     exit;
@@ -238,6 +263,43 @@ if ($isPost) {
     pb_csrf_check();
     $do = (string) ($_POST['do'] ?? '');
 
+    // Demo site (lib/demo.php): visitors are Admins, so a few things stay locked —
+    // code that would run for other visitors, files outside the blog, and the
+    // demo accounts themselves. The owner unlocks them with demo_key.
+    if (pb_demo_locked()) {
+        $target = in_array($do, ['user_save', 'user_toggle'], true) ? pb_row('SELECT * FROM users WHERE id = ?', [(int) ($_POST['id'] ?? 0)]) : null;
+        $back = ['code_save' => 'view=settings&tab=code', 'robots_sitemap' => 'view=settings', 'account_save' => 'view=account', 'user_save' => 'view=users', 'user_toggle' => 'view=users'];
+        if (in_array($do, ['code_save', 'robots_sitemap'], true)
+            || ($do === 'account_save' && (string) ($_POST['new_password'] ?? '') !== '')
+            || ($target && pb_demo_is_demo_user($target))) {
+            pb_flash('That is switched off in the demo, so every visitor gets a working site. It works normally on your own blog.', 'info');
+            pb_redirect($back[$do] ?? '');
+        }
+    }
+    if ($do === 'demo_unlock' && pb_demo_on() && pb_can($user, 'settings.manage')) {
+        $key = (string) pb_config('demo_key');
+        if ($key !== '' && hash_equals($key, (string) ($_POST['key'] ?? ''))) {
+            $_SESSION['pb_demo_owner'] = true;
+            pb_flash('Owner tools unlocked for this session.');
+        } else {
+            pb_flash($key === '' ? 'Set demo_key in config.php first.' : 'Wrong demo key.', 'error');
+        }
+        pb_redirect('view=settings&tab=demo');
+    }
+    if (in_array($do, ['demo_snapshot', 'demo_reset', 'demo_lock'], true) && pb_demo_on() && pb_demo_owner()) {
+        if ($do === 'demo_snapshot') {
+            pb_flash(pb_demo_snapshot() ? 'Saved. Every reset now returns to exactly this content.' : 'Could not save the snapshot (check that data/ is writable).', 'ok');
+        } elseif ($do === 'demo_reset') {
+            @file_put_contents(pb_demo_dir() . '/last-reset', '0'); // the next request restores the snapshot, before the database opens
+            unset($_SESSION['pb_demo_owner']);
+            pb_flash('The demo was reset to its starting point.');
+            pb_redirect('view=settings&tab=demo');
+        } else {
+            unset($_SESSION['pb_demo_owner']);
+            pb_flash('Owner tools locked.');
+        }
+        pb_redirect('view=settings&tab=demo');
+    }
     if ($do === 'upgrade_dismiss' && pb_can($user, 'settings.manage')) {
         pb_settings_save(['upgrade_notice' => '']);
         pb_redirect(preg_match('/^[a-z]+$/', (string) ($_POST['back'] ?? '')) ? 'view=' . $_POST['back'] : '');
@@ -759,10 +821,11 @@ if ($view === 'edit') {
 } elseif ($view === 'settings' && pb_can($user, 'settings.manage')) {
     $title = 'Settings';
     $s = function ($k) { return pb_setting($k); };
-    $stab = in_array($_GET['tab'] ?? '', ['general', 'design', 'navigation', 'code', 'addons'], true) ? $_GET['tab'] : 'general';
+    $stabs = ['general' => 'General', 'design' => 'Design', 'navigation' => 'Navigation', 'code' => 'Code', 'addons' => 'Addons'] + (pb_demo_on() ? ['demo' => 'Demo'] : []);
+    $stab = isset($stabs[$_GET['tab'] ?? '']) ? $_GET['tab'] : 'general';
     $isGr = pb_is_georank_site(); ?>
 <div class="pb-tabs">
-  <?php foreach (['general' => 'General', 'design' => 'Design', 'navigation' => 'Navigation', 'code' => 'Code', 'addons' => 'Addons'] as $k => $label): ?>
+  <?php foreach ($stabs as $k => $label): ?>
     <a href="<?= pb_e(pb_admin_url('view=settings&tab=' . $k)) ?>" class="<?= $k === $stab ? 'active' : '' ?>"><?= pb_e($label) ?></a>
   <?php endforeach; ?>
 </div>
@@ -813,10 +876,38 @@ if ($view === 'edit') {
     <p class="pb-small pb-muted"><?= $isGr ? 'Empty values follow your GeoRank theme (Design tab), so the blog keeps matching the site.' : 'Empty values use the PostBase defaults.' ?></p>
   </div>
 </div>
+<?php elseif ($stab === 'demo'):
+    $snap = pb_demo_dir() . '/seed.sqlite'; ?>
+<div class="pb-two-col">
+  <div class="pb-card">
+    <h3 class="pb-h3">Demo mode is on</h3>
+    <p class="pb-small">Set in <code>config.php</code>. Visitors sign in with one click as Admin, Editor or Contributor. The database and uploads go back to the saved starting point every <strong><?= pb_demo_minutes() ?> minutes</strong>.</p>
+    <p class="pb-small pb-muted">Last reset: <?= pb_demo_last_reset() ? pb_e(pb_format_date(gmdate('Y-m-d H:i:s', pb_demo_last_reset()), 'j M Y, g:i a')) : '—' ?> · next in <?= pb_demo_minutes_left() ?> min
+      · starting point saved <?= is_file($snap) ? pb_e(pb_format_date(gmdate('Y-m-d H:i:s', filemtime($snap)), 'j M Y, g:i a')) : '—' ?></p>
+    <p class="pb-small pb-muted">Locked for visitors: Settings → Code, robots.txt, and the demo accounts' passwords, emails and roles. Public pages are marked <code>noindex</code> and show a "Try the admin" bar.</p>
+  </div>
+  <div class="pb-card">
+    <h3 class="pb-h3">Owner tools</h3>
+    <?php if (!pb_demo_owner()): ?>
+      <form method="post"><?= pb_csrf_field() ?><input type="hidden" name="do" value="demo_unlock">
+        <label>Demo key <span class="pb-small pb-muted">(<code>demo_key</code> in config.php)</span><input type="password" name="key" autocomplete="off" required></label>
+        <button class="pb-btn pb-btn-primary">Unlock</button></form>
+    <?php else: ?>
+      <p class="pb-small">Unlocked for this session. Arrange the posts, pages, images and settings the way every visitor should find them, then save.</p>
+      <form method="post" class="pb-inline"><?= pb_csrf_field() ?><input type="hidden" name="do" value="demo_snapshot">
+        <button class="pb-btn pb-btn-primary" data-confirm="Make the current content the demo's starting point?">Save current content as the starting point</button></form>
+      <form method="post" class="pb-inline"><?= pb_csrf_field() ?><input type="hidden" name="do" value="demo_reset">
+        <button class="pb-btn" data-confirm="Throw away all changes since the last save?">Reset now</button></form>
+      <form method="post" class="pb-inline"><?= pb_csrf_field() ?><input type="hidden" name="do" value="demo_lock">
+        <button class="pb-btn">Lock</button></form>
+    <?php endif; ?>
+  </div>
+</div>
 <?php elseif ($stab === 'code'): ?>
 <div class="pb-two-col">
   <form method="post" class="pb-card">
     <?= pb_csrf_field() ?><input type="hidden" name="do" value="code_save">
+    <?php if (pb_demo_locked()): ?><div class="pb-note pb-note-info pb-small">This tab is read-only in the demo: code here runs for every visitor. On your own blog, Admins can edit it.</div><?php endif; ?>
     <label>Header code <span class="pb-small pb-muted">— added inside <code>&lt;head&gt;</code> on every public page</span>
       <textarea name="code_head" rows="9" class="pb-code" spellcheck="false" placeholder="<meta name=&quot;google-site-verification&quot; content=&quot;…&quot;>"><?= pb_e($s('code_head')) ?></textarea></label>
     <label>Footer code <span class="pb-small pb-muted">— added just before <code>&lt;/body&gt;</code> on every public page</span>
@@ -1242,6 +1333,10 @@ $nav = [
         <?php if (!empty($_SESSION['pb_uid'])): ?><a href="<?= pb_e(pb_admin_url('logout=' . pb_csrf_token())) ?>">Log out</a><?php endif; ?>
       </div>
     </header>
+    <?php if (pb_demo_on()): ?>
+    <div class="pb-demo-bar" role="note">🧪 <strong>Demo</strong> · you're signed in as <?= pb_e(pb_role_label($user['role'])) ?>. Try anything: it all resets in <?= pb_demo_minutes_left() ?> min.
+      <?php if (!empty($_SESSION['pb_uid'])): ?><a href="<?= pb_e(pb_admin_url('logout=' . pb_csrf_token())) ?>">Switch role</a><?php endif; ?></div>
+    <?php endif; ?>
     <?php if (pb_can($user, 'settings.manage') && ($up = pb_upgrade_notice())): $notes = pb_changelog_between((string) $up['from'], (string) $up['to']); ?>
     <div class="pb-upgrade" role="status">
       <div class="pb-upgrade-head">

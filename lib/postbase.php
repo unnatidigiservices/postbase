@@ -10,7 +10,7 @@
  */
 if (!defined('PB_ROOT')) { http_response_code(403); exit; }
 
-define('PB_VERSION', '0.17.0');
+define('PB_VERSION', '0.18.0');
 define('PB_HOMEPAGE', 'https://postbase.top');                             // project info, docs and support
 define('PB_REPO_URL', 'https://github.com/unnatidigiservices/postbase');    // source code and issues
 define('PB_SCHEMA_VERSION', 3);
@@ -33,6 +33,10 @@ $PB_CONFIG = [
     'setup_key' => '',          // if set, first-run setup asks for it
     'max_upload_mb' => 5,
     'max_image_px'  => 1600,
+    // Public "try it" site that resets itself (lib/demo.php). Never on a real blog.
+    'demo'               => false,
+    'demo_reset_minutes' => 60,
+    'demo_key'           => '',   // typed in Settings → Demo to unlock owner tools
 ];
 if (is_file(PB_ROOT . '/config.php')) {
     $pbUserConfig = include PB_ROOT . '/config.php';
@@ -196,6 +200,8 @@ function pb_db() {
     if (!is_dir($dir) && !@mkdir($dir, 0755, true)) pb_fatal('Could not create the data folder: ' . $dir);
     if (!is_writable($dir)) pb_fatal('The data folder is not writable: ' . $dir);
     pb_ensure_protection();
+    $demo = pb_demo_on();
+    if ($demo) pb_demo_maybe_reset($path); // lib/demo.php: restore the snapshot when it's time
     try {
         $pdo = new PDO('sqlite:' . $path, null, null, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
@@ -203,8 +209,10 @@ function pb_db() {
         ]);
         $pdo->exec('PRAGMA foreign_keys = ON');
         $pdo->exec('PRAGMA busy_timeout = 5000');
-        try { $pdo->exec('PRAGMA journal_mode = WAL'); } catch (Exception $e) { /* some network filesystems refuse WAL; rollback journal is fine */ }
+        // WAL is faster, but a demo swaps the whole file on reset: a single file is safer there.
+        try { $pdo->exec('PRAGMA journal_mode = ' . ($demo ? 'DELETE' : 'WAL')); } catch (Exception $e) { /* some network filesystems refuse WAL; rollback journal is fine */ }
         pb_migrate($pdo);
+        if ($demo) pb_demo_bootstrap();
     } catch (PDOException $e) {
         pb_fatal('Database error: ' . $e->getMessage());
     }
@@ -381,6 +389,8 @@ function pb_version_check() {
     $known = (string) pb_setting('installed_version');
     if ($known === PB_VERSION) return;
     $save = ['installed_version' => PB_VERSION];
+    // A demo restores an older snapshot every hour: the notice would keep coming back.
+    if (pb_demo_on()) { pb_settings_save($save); return; }
     // An existing site (not a fresh install) that predates this bookkeeping: the old version is unknown.
     $existing = $known !== '' || (int) pb_val('SELECT COUNT(*) FROM users WHERE created_at < ?', [gmdate('Y-m-d H:i:s', time() - 3600)]) > 0;
     if ($existing) {
@@ -1223,6 +1233,7 @@ function pb_layout_mode() {
 }
 require __DIR__ . '/addons.php';
 require __DIR__ . '/media.php';
+require __DIR__ . '/demo.php';
 
 // Adds "Sitemap: <blog sitemap>" to the site's robots.txt, outside GeoRank's
 // managed marker block so a GeoRank robots regeneration never removes it.

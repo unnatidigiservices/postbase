@@ -15,4 +15,12 @@ return [
     // Upload limits for images. Larger photos are resized to max_image_px wide (needs GD).
     'max_upload_mb' => 5,
     'max_image_px'  => 1600,
+
+    // Public demo site ("try it" install, e.g. demo.postbase.top). NEVER on a real blog:
+    // visitors sign in with one click as Admin/Editor/Contributor, and every
+    // demo_reset_minutes the database and uploads/ go back to a saved starting
+    // point. Type demo_key in Settings → Demo to save that starting point.
+    'demo'               => false,
+    'demo_reset_minutes' => 60,
+    'demo_key'           => '',
 ];

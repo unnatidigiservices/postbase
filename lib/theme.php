@@ -126,6 +126,8 @@ function pb_render_page(array $meta, $content) {
     $codeFooter = trim((string) pb_setting('code_footer'));
     if ($codeHead !== '') $tail .= "<!-- PostBase: custom head code -->\n" . $codeHead . "\n";
     if ($codeFooter !== '') $bodyEnd .= "<!-- PostBase: custom footer code -->\n" . $codeFooter . "\n";
+    $tail .= pb_demo_public_head();    // demo sites (lib/demo.php): noindex…
+    $bodyEnd .= pb_demo_public_bar();  // …and a "Try the admin" bar
 
     header('Content-Type: text/html; charset=utf-8');
     if (pb_layout_mode() === 'georank') {

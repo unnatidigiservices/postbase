@@ -113,6 +113,22 @@ Use **Control Center → Upgrade → Blog → Install Blog** in GeoRank (v1.90+)
 
 Replace every file except `config.php`, `data/` and `uploads/`. Database upgrades run automatically on the next page load.
 
+### Public demo site
+
+To run a "try it" site that anyone can play with, install PostBase on its own (sub)domain and add this to `config.php`:
+
+```php
+return ['demo' => true, 'demo_reset_minutes' => 60, 'demo_key' => 'a-long-secret'];
+```
+
+- **First visit:** PostBase creates demo accounts and sample posts.
+- **Sign-in:** visitors enter with one click as Admin, Editor or Contributor.
+- **Reset:** every 60 minutes the database and images go back to the starting point.
+- **Locked for visitors:** custom header/footer code, robots.txt, and the demo accounts' passwords, emails and roles. Public pages are `noindex`.
+- **Your own starting point:** arrange the content you want, then enter `demo_key` in **Settings → Demo** and click *Save current content as the starting point*.
+
+Never turn this on for a real blog.
+
 ## Nginx
 
 ```nginx
